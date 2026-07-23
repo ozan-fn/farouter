@@ -20,19 +20,20 @@ import (
 const (
 	kiroAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
 	tokenLimit      = 60
-	stickyLimit     = 3
+	poolSize        = 3
 	configPath      = "config.json"
 )
 
 type AccountConfig struct {
-	ID           string `json:"id"`
-	Label        string `json:"label"`
-	RefreshToken string `json:"refreshToken"`
-	ProfileArn   string `json:"profileArn"`
-	AuthMethod   string `json:"authMethod"`
-	Exhausted    bool   `json:"exhausted,omitempty"`
-	Suspended    bool   `json:"suspended,omitempty"`
-	ResetAt      string `json:"resetAt,omitempty"`
+	ID              string `json:"id"`
+	Label           string `json:"label"`
+	RefreshToken    string `json:"refreshToken"`
+	ProfileArn      string `json:"profileArn"`
+	AuthMethod      string `json:"authMethod"`
+	Exhausted       bool   `json:"exhausted,omitempty"`
+	Suspended       bool   `json:"suspended,omitempty"`
+	ResetAt         string `json:"resetAt,omitempty"`
+	LastRefreshedAt string `json:"lastRefreshedAt,omitempty"`
 }
 
 type Config struct {
@@ -41,22 +42,23 @@ type Config struct {
 }
 
 type accountState struct {
-	cfg         AccountConfig
-	accessToken string
-	expiry      time.Time
-	remaining   int
-	exhausted   bool
-	suspended   bool
-	mu          sync.Mutex
+	cfg            AccountConfig
+	accessToken    string
+	expiry         time.Time
+	remaining      int
+	exhausted      bool
+	suspended      bool
+	failedRefresh  int
+	mu             sync.Mutex
 }
 
 var (
-	accounts     []*accountState
-	configMu     sync.Mutex
-	cursor       atomic.Int64
-	stickyIdx    atomic.Int64
-	stickyCount  atomic.Int64
-	bootReady    = make(chan struct{})
+	accounts   []*accountState
+	configMu   sync.Mutex
+	poolMu     sync.Mutex
+	activePool []*accountState
+	poolCursor atomic.Int64
+	bootReady  = make(chan struct{})
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -73,7 +75,6 @@ func (a *accountState) getCreds() (kiro.Credentials, error) {
 			if err == nil {
 				break
 			}
-			// 403 = token revoked/invalid — no point retrying
 			if err.Error() == "upstream returned 403 Forbidden" {
 				return kiro.Credentials{}, err
 			}
@@ -83,6 +84,7 @@ func (a *accountState) getCreds() (kiro.Credentials, error) {
 		if err != nil {
 			return kiro.Credentials{}, err
 		}
+		a.failedRefresh = 0
 		a.accessToken = result.AccessToken
 		a.expiry = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
 		if result.ProfileArn != "" {
@@ -97,6 +99,13 @@ func (a *accountState) getCreds() (kiro.Credentials, error) {
 	}, nil
 }
 
+func (a *accountState) markExhausted() {
+	a.mu.Lock()
+	a.exhausted = true
+	a.remaining = 0
+	a.mu.Unlock()
+}
+
 func (a *accountState) markSuspended() {
 	a.mu.Lock()
 	a.suspended = true
@@ -104,13 +113,6 @@ func (a *accountState) markSuspended() {
 	a.remaining = 0
 	a.cfg.Suspended = true
 	a.cfg.Exhausted = true
-	a.mu.Unlock()
-}
-
-func (a *accountState) markExhausted() {
-	a.mu.Lock()
-	a.exhausted = true
-	a.remaining = 0
 	a.mu.Unlock()
 }
 
@@ -135,7 +137,63 @@ func (a *accountState) consume() {
 	a.mu.Unlock()
 }
 
-// parseResetAt parses resetAt string (unix timestamp or RFC3339)
+func (a *accountState) refreshTokenIfNeeded() {
+	a.mu.Lock()
+	last := a.cfg.LastRefreshedAt
+	suspended := a.suspended
+	a.mu.Unlock()
+
+	if suspended {
+		return
+	}
+
+	if last != "" {
+		t, err := time.Parse(time.RFC3339, last)
+		if err == nil && time.Since(t) < 6*24*time.Hour {
+			return
+		}
+	}
+
+	result, err := kiro.RefreshToken(a.cfg.RefreshToken, kiro.ProviderSpecificData{
+		AuthMethod: a.cfg.AuthMethod,
+		ProfileArn: a.cfg.ProfileArn,
+	})
+	if err != nil {
+		a.mu.Lock()
+		a.failedRefresh++
+		if a.failedRefresh >= 3 {
+			a.exhausted = true
+			a.remaining = 0
+			a.cfg.Exhausted = true
+		}
+		a.mu.Unlock()
+		log.Printf("refresh token update failed [%s]: %v", a.cfg.Label, err)
+		return
+	}
+
+	a.mu.Lock()
+	a.cfg.RefreshToken = result.RefreshToken
+	a.cfg.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
+	a.accessToken = result.AccessToken
+	a.expiry = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	if result.ProfileArn != "" {
+		a.cfg.ProfileArn = result.ProfileArn
+	}
+	a.mu.Unlock()
+	log.Printf("refresh token updated [%s]", a.cfg.Label)
+}
+
+func startTokenRefreshLoop() {
+	go func() {
+		for range time.Tick(24 * time.Hour) {
+			for _, a := range accounts {
+				a.refreshTokenIfNeeded()
+			}
+			saveConfig()
+		}
+	}()
+}
+
 func parseResetAt(s string) time.Time {
 	if s == "" {
 		return time.Time{}
@@ -149,14 +207,73 @@ func parseResetAt(s string) time.Time {
 	return time.Time{}
 }
 
+// fillPool fills activePool with up to poolSize available accounts
+func fillPool() {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	activePool = nil
+	for _, a := range accounts {
+		if a.available() {
+			activePool = append(activePool, a)
+			if len(activePool) == poolSize {
+				break
+			}
+		}
+	}
+	poolCursor.Store(0)
+}
+
+func pickAccount(exclude map[*accountState]bool) *accountState {
+	poolMu.Lock()
+
+	// Remove unavailable or excluded from pool
+	for i := 0; i < len(activePool); {
+		a := activePool[i]
+		if !a.available() || exclude[a] {
+			activePool = append(activePool[:i], activePool[i+1:]...)
+		} else {
+			i++
+		}
+	}
+
+	// Refill pool if below poolSize
+	if len(activePool) < poolSize {
+		poolMu.Unlock()
+		poolMu.Lock()
+		existing := make(map[*accountState]bool)
+		for _, a := range activePool {
+			existing[a] = true
+		}
+		for _, a := range accounts {
+			if len(activePool) >= poolSize {
+				break
+			}
+			if !existing[a] && !exclude[a] && a.available() {
+				activePool = append(activePool, a)
+			}
+		}
+	}
+
+	if len(activePool) == 0 {
+		poolMu.Unlock()
+		return nil
+	}
+
+	idx := poolCursor.Add(1) % int64(len(activePool))
+	acc := activePool[idx]
+	poolMu.Unlock()
+	return acc
+}
+
 func saveConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
 	cfg := Config{}
-	idx := stickyIdx.Load()
-	if idx >= 0 && idx < int64(len(accounts)) {
-		cfg.StickyID = accounts[idx].cfg.ID
+	poolMu.Lock()
+	if len(activePool) > 0 {
+		cfg.StickyID = activePool[0].cfg.ID
 	}
+	poolMu.Unlock()
 	for _, a := range accounts {
 		a.mu.Lock()
 		entry := a.cfg
@@ -175,42 +292,6 @@ func saveConfig() {
 	}
 }
 
-func pickAccount(exclude map[*accountState]bool) *accountState {
-	n := int64(len(accounts))
-	if n == 0 {
-		return nil
-	}
-
-	// Try sticky account first
-	idx := stickyIdx.Load()
-	if idx < n {
-		acc := accounts[idx]
-		if !exclude[acc] && acc.available() {
-			cnt := stickyCount.Add(1)
-			if cnt <= int64(stickyLimit) {
-				return acc
-			}
-			// Sticky limit reached — advance to next
-			stickyCount.Store(1)
-			next := (idx + 1) % n
-			stickyIdx.Store(next)
-			return accounts[next]
-		}
-	}
-
-	// Sticky account unavailable — find next available
-	for i := int64(0); i < n; i++ {
-		next := (idx + 1 + i) % n
-		acc := accounts[next]
-		if !exclude[acc] && acc.available() {
-			stickyIdx.Store(next)
-			stickyCount.Store(1)
-			return acc
-		}
-	}
-	return nil
-}
-
 func loadConfig() {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -226,11 +307,9 @@ func loadConfig() {
 			continue
 		}
 		state := &accountState{cfg: a, remaining: tokenLimit}
-		// Restore exhausted from config, but check if reset date has passed
 		if a.Exhausted {
 			resetTime := parseResetAt(a.ResetAt)
 			if !resetTime.IsZero() && now.After(resetTime) {
-				// Reset date passed — mark active again
 				state.exhausted = false
 				state.cfg.Exhausted = false
 				state.cfg.ResetAt = ""
@@ -239,15 +318,22 @@ func loadConfig() {
 				state.remaining = 0
 			}
 		}
+		if a.Suspended {
+			state.suspended = true
+			state.exhausted = true
+			state.remaining = 0
+		}
 		accounts = append(accounts, state)
 	}
 	log.Printf("loaded %d kiro accounts", len(accounts))
 
-	// Restore stickyId from config
+	// Restore sticky pool from config
 	if cfg.StickyID != "" {
 		for i, a := range accounts {
 			if a.cfg.ID == cfg.StickyID && a.available() {
-				stickyIdx.Store(int64(i))
+				poolMu.Lock()
+				activePool = append(activePool, accounts[i])
+				poolMu.Unlock()
 				break
 			}
 		}
@@ -258,7 +344,6 @@ func loadConfig() {
 		wg.Add(1)
 		go func(acc *accountState) {
 			defer wg.Done()
-			// Skip quota check if already known exhausted
 			acc.mu.Lock()
 			alreadyExhausted := acc.exhausted
 			acc.mu.Unlock()
@@ -291,23 +376,41 @@ func loadConfig() {
 	}
 	wg.Wait()
 
-	// Persist exhausted state to config
+	fillPool()
+	saveConfig()
+
+	// Refresh tokens that are missing or stale at boot
+	for _, a := range accounts {
+		a.refreshTokenIfNeeded()
+	}
 	saveConfig()
 
 	active := 0
+	exhausted := 0
+	suspended := 0
+	failedRefresh := 0
 	for _, a := range accounts {
 		a.mu.Lock()
-		if !a.exhausted {
+		switch {
+		case a.suspended:
+			suspended++
+		case a.failedRefresh >= 3:
+			failedRefresh++
+		case a.exhausted:
+			exhausted++
+		default:
 			active++
 		}
 		a.mu.Unlock()
 	}
-	log.Printf("boot done: %d/%d accounts active", active, len(accounts))
+	log.Printf("boot done: %d active, %d exhausted, %d suspended, %d invalid token, pool=%d",
+		active, exhausted, suspended, failedRefresh, len(activePool))
 	close(bootReady)
 }
 
 func main() {
 	go loadConfig()
+	startTokenRefreshLoop()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -360,8 +463,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				resetDone = true
 				log.Println("all accounts exhausted, resetting and retrying once")
 				for _, a := range accounts {
-					a.reset()
+					if !a.suspended {
+						a.reset()
+					}
 				}
+				fillPool()
 				tried = make(map[*accountState]bool)
 				continue
 			}
@@ -409,9 +515,18 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		Label     string `json:"label"`
 		Remaining int    `json:"remaining"`
 		Exhausted bool   `json:"exhausted"`
+		Suspended bool   `json:"suspended"`
 		ResetAt   string `json:"resetAt"`
 		HasToken  bool   `json:"hasToken"`
+		InPool    bool   `json:"inPool"`
 	}
+	poolMu.Lock()
+	poolSet := make(map[*accountState]bool)
+	for _, a := range activePool {
+		poolSet[a] = true
+	}
+	poolMu.Unlock()
+
 	var out []entry
 	for _, a := range accounts {
 		a.mu.Lock()
@@ -420,8 +535,10 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 			Label:     a.cfg.Label,
 			Remaining: a.remaining,
 			Exhausted: a.exhausted,
+			Suspended: a.suspended,
 			ResetAt:   a.cfg.ResetAt,
 			HasToken:  a.accessToken != "",
+			InPool:    poolSet[a],
 		})
 		a.mu.Unlock()
 	}
@@ -431,8 +548,11 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func handleReset(w http.ResponseWriter, r *http.Request) {
 	for _, a := range accounts {
-		a.reset()
+		if !a.suspended {
+			a.reset()
+		}
 	}
+	fillPool()
 	go saveConfig()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"reset": len(accounts)})
