@@ -1,0 +1,12 @@
+{
+  "stickyId": "",
+  "accounts": [
+    {
+      "id": "your-account-uuid",
+      "label": "Kiro Account 1",
+      "refreshToken": "aorAAAAAG...",
+      "profileArn": "arn:aws:codewhisperer:us-east-1:xxxxxxxxxxxx:profile/XXXXXXXXXXXX",
+      "authMethod": "imported"
+    }
+  ]
+}

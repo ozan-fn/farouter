@@ -1,0 +1,9 @@
+# farouter binaries
+farouter
+
+# config with real tokens — use config.example.json as template
+config.json
+
+# Go build cache
+*.test
+*.out
