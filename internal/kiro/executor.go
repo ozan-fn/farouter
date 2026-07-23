@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"farouter/internal/rtk"
 	"github.com/google/uuid"
 )
 
@@ -158,6 +160,14 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 
 	if history == nil {
 		history = []map[string]any{}
+	}
+
+	// RTK: compress tool_result content to reduce tokens
+	rtkPayload := map[string]any{"conversationState": map[string]any{"history": history, "currentMessage": currentMsg}}
+	if stats := rtk.CompressMessages(rtkPayload, true); stats != nil && len(stats.Hits) > 0 {
+		if rtkLog := rtk.FormatRtkLog(stats); rtkLog != "" {
+			log.Println(rtkLog)
+		}
 	}
 
 	replayCurrent := currentMsg["userInputMessage"].(map[string]any)
