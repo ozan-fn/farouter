@@ -11,12 +11,12 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"farouter/internal/kiro"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"farouter/internal/kiro"
 )
 
 const (
@@ -39,28 +39,32 @@ type AccountConfig struct {
 }
 
 type Config struct {
-	StickyID string          `json:"stickyId,omitempty"`
-	Accounts []AccountConfig `json:"accounts"`
+	ActiveBatchIds []string        `json:"activeBatchIds,omitempty"`
+	CurrentSlot    int             `json:"currentSlot,omitempty"`
+	StickyCount    int             `json:"stickyCount,omitempty"`
+	Accounts       []AccountConfig `json:"accounts"`
 }
 
 type accountState struct {
-	cfg            AccountConfig
-	accessToken    string
-	expiry         time.Time
-	remaining      int
-	exhausted      bool
-	suspended      bool
-	failedRefresh  int
-	mu             sync.Mutex
+	cfg           AccountConfig
+	accessToken   string
+	expiry        time.Time
+	remaining     int
+	exhausted     bool
+	suspended     bool
+	failedRefresh int
+	mu            sync.Mutex
 }
 
 var (
-	accounts   []*accountState
-	configMu   sync.Mutex
-	poolMu     sync.Mutex
-	activePool []*accountState
-	poolCursor atomic.Int64
-	bootReady  = make(chan struct{})
+	accounts      []*accountState
+	configMu      sync.Mutex
+	activeBatch   [3]*accountState
+	standbyQueue  []*accountState
+	currentSlot   int
+	stickyCount   int
+	rotationMu    sync.Mutex
+	bootReady     = make(chan struct{})
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -209,70 +213,75 @@ func parseResetAt(s string) time.Time {
 	return time.Time{}
 }
 
-func fillPool() {
-	poolMu.Lock()
-	defer poolMu.Unlock()
-	activePool = nil
+func fillActiveBatch() {
+	rotationMu.Lock()
+	defer rotationMu.Unlock()
+
+	// Build standby queue from all non-suspended, non-exhausted accounts
+	standbyQueue = nil
 	for _, a := range accounts {
 		if a.available() {
-			activePool = append(activePool, a)
-			if len(activePool) == poolSize {
-				break
-			}
+			standbyQueue = append(standbyQueue, a)
 		}
 	}
-	poolCursor.Store(0)
+
+	// Fill activeBatch[0:3] from standby
+	for i := 0; i < 3 && len(standbyQueue) > 0; i++ {
+		activeBatch[i] = standbyQueue[0]
+		standbyQueue = standbyQueue[1:]
+	}
+
+	currentSlot = 0
+	stickyCount = 0
+}
+
+func refillSlot(slot int) {
+	rotationMu.Lock()
+	defer rotationMu.Unlock()
+
+	if len(standbyQueue) == 0 {
+		activeBatch[slot] = nil
+		saveConfig()
+		return
+	}
+
+	activeBatch[slot] = standbyQueue[0]
+	standbyQueue = standbyQueue[1:]
+	saveConfig()
 }
 
 func pickAccount(exclude map[*accountState]bool) *accountState {
-	poolMu.Lock()
+	rotationMu.Lock()
+	defer rotationMu.Unlock()
 
-	for i := 0; i < len(activePool); {
-		a := activePool[i]
-		if !a.available() || exclude[a] {
-			activePool = append(activePool[:i], activePool[i+1:]...)
-		} else {
-			i++
+	// Try current slot
+	maxAttempts := 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		acc := activeBatch[currentSlot]
+		if acc != nil && !exclude[acc] && acc.available() {
+			return acc
 		}
+		// Move to next slot
+		currentSlot = (currentSlot + 1) % 3
 	}
 
-	if len(activePool) < poolSize {
-		poolMu.Unlock()
-		poolMu.Lock()
-		existing := make(map[*accountState]bool)
-		for _, a := range activePool {
-			existing[a] = true
-		}
-		for _, a := range accounts {
-			if len(activePool) >= poolSize {
-				break
-			}
-			if !existing[a] && !exclude[a] && a.available() {
-				activePool = append(activePool, a)
-			}
-		}
-	}
-
-	if len(activePool) == 0 {
-		poolMu.Unlock()
-		return nil
-	}
-
-	idx := poolCursor.Add(1) % int64(len(activePool))
-	acc := activePool[idx]
-	poolMu.Unlock()
-	return acc
+	// All slots exhausted/excluded
+	return nil
 }
 
 func saveConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
 	cfg := Config{}
-	poolMu.Lock()
-	if len(activePool) > 0 {
-		cfg.StickyID = activePool[0].cfg.ID
+	rotationMu.Lock()
+	cfg.CurrentSlot = currentSlot
+	cfg.StickyCount = stickyCount
+	for i := 0; i < 3; i++ {
+		if activeBatch[i] != nil {
+			cfg.ActiveBatchIds = append(cfg.ActiveBatchIds, activeBatch[i].cfg.ID)
+		}
 	}
-	poolMu.Unlock()
+	rotationMu.Unlock()
 	for _, a := range accounts {
 		a.mu.Lock()
 		entry := a.cfg
@@ -326,15 +335,23 @@ func loadConfig() {
 	}
 	log.Printf("loaded %d kiro accounts", len(accounts))
 
-	if cfg.StickyID != "" {
-		for i, a := range accounts {
-			if a.cfg.ID == cfg.StickyID && a.available() {
-				poolMu.Lock()
-				activePool = append(activePool, accounts[i])
-				poolMu.Unlock()
+	// Restore activeBatch from persisted state
+	if len(cfg.ActiveBatchIds) > 0 {
+		rotationMu.Lock()
+		for i, id := range cfg.ActiveBatchIds {
+			if i >= 3 {
 				break
 			}
+			for _, a := range accounts {
+				if a.cfg.ID == id && a.available() {
+					activeBatch[i] = a
+					break
+				}
+			}
 		}
+		currentSlot = cfg.CurrentSlot
+		stickyCount = cfg.StickyCount
+		rotationMu.Unlock()
 	}
 
 	var wg sync.WaitGroup
@@ -374,7 +391,7 @@ func loadConfig() {
 	}
 	wg.Wait()
 
-	fillPool()
+	fillActiveBatch()
 	saveConfig()
 
 	for _, a := range accounts {
@@ -400,8 +417,17 @@ func loadConfig() {
 		}
 		a.mu.Unlock()
 	}
+	rotationMu.Lock()
+	batchSize := 0
+	for i := 0; i < 3; i++ {
+		if activeBatch[i] != nil {
+			batchSize++
+		}
+	}
+	rotationMu.Unlock()
+
 	log.Printf("boot done: %d active, %d exhausted, %d suspended, %d invalid token, pool=%d",
-		active, exhausted, suspended, failedRefresh, len(activePool))
+		active, exhausted, suspended, failedRefresh, batchSize)
 	close(bootReady)
 }
 
@@ -423,7 +449,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "3000"
+		port = "20180"
 	}
 	log.Println("listening on :" + port)
 	log.Fatal(http.ListenAndServe(":"+port, r))
@@ -496,7 +522,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						a.reset()
 					}
 				}
-				fillPool()
+				fillActiveBatch()
 				tried = make(map[*accountState]bool)
 				continue
 			}
@@ -549,12 +575,14 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		HasToken  bool   `json:"hasToken"`
 		InPool    bool   `json:"inPool"`
 	}
-	poolMu.Lock()
-	poolSet := make(map[*accountState]bool)
-	for _, a := range activePool {
-		poolSet[a] = true
+	rotationMu.Lock()
+	batchSet := make(map[*accountState]bool)
+	for i := 0; i < 3; i++ {
+		if activeBatch[i] != nil {
+			batchSet[activeBatch[i]] = true
+		}
 	}
-	poolMu.Unlock()
+	rotationMu.Unlock()
 
 	var out []entry
 	for _, a := range accounts {
@@ -567,7 +595,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 			Suspended: a.suspended,
 			ResetAt:   a.cfg.ResetAt,
 			HasToken:  a.accessToken != "",
-			InPool:    poolSet[a],
+			InPool:    batchSet[a],
 		})
 		a.mu.Unlock()
 	}
@@ -581,7 +609,7 @@ func handleReset(w http.ResponseWriter, r *http.Request) {
 			a.reset()
 		}
 	}
-	fillPool()
+	fillActiveBatch()
 	go saveConfig()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"reset": len(accounts)})

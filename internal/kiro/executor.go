@@ -65,9 +65,12 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 			return ErrExhausted
 		}
 		if resp.StatusCode == http.StatusForbidden {
-			var e struct{ Reason string `json:"reason"` }
+			var e struct {
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			}
 			json.Unmarshal(errBody, &e)
-			if e.Reason == "TEMPORARILY_SUSPENDED" {
+			if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
 				return ErrSuspended
 			}
 		}
