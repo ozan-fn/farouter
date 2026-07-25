@@ -30,16 +30,6 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 		reconcileOrphanedToolResults(history, currentMsg)
 	}
 
-	history, currentMsg = applySessionReplay(
-		conversationID, upstreamModel, "",
-		"", timestamp,
-		history, currentMsg,
-	)
-
-	if history == nil {
-		history = []map[string]any{}
-	}
-
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = req.MaxCompletion
@@ -54,13 +44,40 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 	}
 	kiroEffort := applyThinkingAllowlist(rawEffort, upstreamModel)
 
+	var systemPromptParts []string
+	if rawEffort != "" {
+		effortLength := ThinkingLengthForEffort(rawEffort)
+		systemPromptParts = append(systemPromptParts, BuildThinkingSystemPrefix(effortLength))
+	}
+	if resolved.Agentic {
+		systemPromptParts = append(systemPromptParts, AgenticSystemPrompt)
+	}
+	systemPrompt := strings.Join(systemPromptParts, "\n\n")
+
+	currentTimeContext := "[Context: Current time is " + timestamp + "]"
+	var contentPrefixParts []string
+	if systemPrompt != "" {
+		contentPrefixParts = append(contentPrefixParts, systemPrompt)
+	}
+	contentPrefixParts = append(contentPrefixParts, currentTimeContext)
+	contentPrefix := strings.Join(contentPrefixParts, "\n\n")
+
+	history, currentMsg = applySessionReplay(
+		conversationID, upstreamModel, systemPrompt,
+		contentPrefix, currentTimeContext,
+		history, currentMsg,
+	)
+
+	if history == nil {
+		history = []map[string]any{}
+	}
+
 	finalContent := ""
 	if currentMsg != nil {
 		if uim, ok := currentMsg["userInputMessage"].(map[string]any); ok {
 			finalContent, _ = uim["content"].(string)
 		}
 	}
-	finalContent = "[Context: Current time is " + timestamp + "]\n\n" + finalContent
 
 	if toolDocs != "" {
 		finalContent = "# Tool Documentation\n\n" + toolDocs + "\n\n---\n\n" + finalContent
@@ -93,31 +110,27 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 		},
 	}
 
+	if systemPrompt != "" {
+		payload["systemPrompt"] = systemPrompt
+	}
+
 	if profileArn != "" {
 		payload["profileArn"] = profileArn
 	}
 
-	if rawEffort != "" {
-		effortLength := ThinkingLengthForEffort(rawEffort)
-		directive := fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", effortLength)
-		if uim, ok := payload["conversationState"].(map[string]any)["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any); ok {
-			uim["content"] = directive + "\n\n" + uim["content"].(string)
+	if kiroEffort != "" {
+		fields := map[string]any{
+			"output_config": map[string]any{"effort": kiroEffort},
+			"thinking":      map[string]any{"type": "adaptive", "display": "summarized"},
 		}
+		if maxTokens > 0 {
+			fields["max_tokens"] = max(maxTokens, 1024)
+		}
+		payload["additionalModelRequestFields"] = fields
 
-		if kiroEffort != "" {
-			fields := map[string]any{
-				"output_config": map[string]any{"effort": kiroEffort},
-				"thinking":      map[string]any{"type": "adaptive", "display": "summarized"},
-			}
-			if maxTokens > 0 {
-				fields["max_tokens"] = max(maxTokens, 1024)
-			}
-			payload["additionalModelRequestFields"] = fields
-
-			if _, has := payload["inferenceConfig"]; !has {
-				delete(payload, "temperature")
-				delete(payload, "topP")
-			}
+		if _, has := payload["inferenceConfig"]; !has {
+			delete(payload, "temperature")
+			delete(payload, "topP")
 		}
 	} else {
 		additionalFields := BuildAdditionalModelRequestFields(req.ReasoningEffort, upstreamModel)

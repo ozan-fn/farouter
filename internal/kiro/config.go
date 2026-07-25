@@ -88,13 +88,10 @@ func NormalizeEffort(raw string) string {
 }
 
 // ThinkingLengthForEffort returns a soft <max_thinking_length> budget per effort level.
+// Clamped to 32000 per Kiro upstream maximum.
 func ThinkingLengthForEffort(effort string) int {
 	switch effort {
-	case "max":
-		return 120000
-	case "xhigh":
-		return 64000
-	case "high":
+	case "max", "xhigh", "high":
 		return 32000
 	case "medium":
 		return 16000

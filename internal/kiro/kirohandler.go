@@ -28,6 +28,7 @@ type kiroSSEState struct {
 	usage             map[string]any
 	responseID        string
 	created           int64
+	model             string
 	thinkingState     kiroThinkingState
 	totalContentLength int
 	contextUsagePct   float64
@@ -52,6 +53,7 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 		toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
 		responseID:     fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli()),
 		created:        time.Now().Unix(),
+		model:          model,
 	}
 
 	emitDelta := func(delta map[string]any) {
@@ -173,6 +175,9 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 
 		case "metricsEvent":
 			handleKiroMetricsEvent(event.Payload, state)
+
+		case "meteringEvent":
+			handleKiroMeteringEvent(event.Payload, state)
 
 		case "contextUsageEvent":
 			handleKiroContextUsageEvent(event.Payload, state)
@@ -302,12 +307,40 @@ func handleKiroMetricsEvent(payload map[string]any, state *kiroSSEState) {
 			"completion_tokens": completion,
 			"total_tokens":      prompt + completion,
 		}
-		if v := toInt(metrics["cacheReadInputTokens"]); v > 0 {
-			state.usage["cache_read_input_tokens"] = v
+		// Handle both camelCase and snake_case variants
+		cacheRead := toInt(metrics["cacheReadInputTokens"])
+		if cacheRead == 0 {
+			cacheRead = toInt(metrics["cache_read_input_tokens"])
 		}
-		if v := toInt(metrics["cacheCreationInputTokens"]); v > 0 {
-			state.usage["cache_creation_input_tokens"] = v
+		if cacheRead > 0 {
+			state.usage["cache_read_input_tokens"] = cacheRead
 		}
+		cacheCreate := toInt(metrics["cacheCreationInputTokens"])
+		if cacheCreate == 0 {
+			cacheCreate = toInt(metrics["cache_creation_input_tokens"])
+		}
+		if cacheCreate > 0 {
+			state.usage["cache_creation_input_tokens"] = cacheCreate
+		}
+	}
+}
+
+func handleKiroMeteringEvent(payload map[string]any, state *kiroSSEState) {
+	metering := payload
+	if m, ok := payload["meteringEvent"].(map[string]any); ok {
+		metering = m
+	}
+	credits := toInt(metering["usage"])
+	if credits > 0 {
+		if state.usage == nil {
+			state.usage = make(map[string]any)
+		}
+		state.usage["kiro_credits"] = credits
+		unit := "credit"
+		if u, ok := metering["unit"].(string); ok && u != "" {
+			unit = u
+		}
+		state.usage["kiro_credit_unit"] = unit
 	}
 }
 
@@ -369,7 +402,17 @@ func buildKiroUsage(state *kiroSSEState) map[string]any {
 	}
 	prompt := 0
 	if state.hasContextUsage {
-		prompt = int(state.contextUsagePct * 2000)
+		// Get model's context window; default to 200000
+		contextWindow := DefaultContextLength
+		for _, m := range KnownModels {
+			if m.ID == state.model {
+				if m.ContextLength > 0 {
+					contextWindow = m.ContextLength
+				}
+				break
+			}
+		}
+		prompt = int(state.contextUsagePct * float64(contextWindow) / 100)
 	}
 	return map[string]any{
 		"prompt_tokens":     prompt,
