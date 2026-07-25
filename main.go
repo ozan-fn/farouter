@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -207,7 +209,6 @@ func parseResetAt(s string) time.Time {
 	return time.Time{}
 }
 
-// fillPool fills activePool with up to poolSize available accounts
 func fillPool() {
 	poolMu.Lock()
 	defer poolMu.Unlock()
@@ -226,7 +227,6 @@ func fillPool() {
 func pickAccount(exclude map[*accountState]bool) *accountState {
 	poolMu.Lock()
 
-	// Remove unavailable or excluded from pool
 	for i := 0; i < len(activePool); {
 		a := activePool[i]
 		if !a.available() || exclude[a] {
@@ -236,7 +236,6 @@ func pickAccount(exclude map[*accountState]bool) *accountState {
 		}
 	}
 
-	// Refill pool if below poolSize
 	if len(activePool) < poolSize {
 		poolMu.Unlock()
 		poolMu.Lock()
@@ -327,7 +326,6 @@ func loadConfig() {
 	}
 	log.Printf("loaded %d kiro accounts", len(accounts))
 
-	// Restore sticky pool from config
 	if cfg.StickyID != "" {
 		for i, a := range accounts {
 			if a.cfg.ID == cfg.StickyID && a.available() {
@@ -379,7 +377,6 @@ func loadConfig() {
 	fillPool()
 	saveConfig()
 
-	// Refresh tokens that are missing or stale at boot
 	for _, a := range accounts {
 		a.refreshTokenIfNeeded()
 	}
@@ -454,6 +451,38 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		conversationID = r.Header.Get("X-Conversation-Id")
 	}
 
+	// Client disconnect detection (streamHandler.js createDisconnectAwareStream)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		<-r.Context().Done()
+		cancel()
+	}()
+
+	// SSE heartbeat (sseConstants.js style keepalive)
+	heartbeatStop := make(chan struct{})
+	defer close(heartbeatStop)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				select {
+				case <-heartbeatStop:
+					return
+				default:
+				}
+				io.WriteString(w, ": heartbeat\n\n")
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			case <-heartbeatStop:
+				return
+			}
+		}
+	}()
+
 	tried := make(map[*accountState]bool)
 	resetDone := false
 	for {
@@ -483,7 +512,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		acc.consume()
-		err = kiro.Execute(creds, req, w, conversationID)
+		err = kiro.Execute(ctx, creds, req, w, conversationID)
 		if err == nil {
 			return
 		}

@@ -8,14 +8,6 @@ import (
 	"io"
 )
 
-// Event is a decoded AWS EventStream frame
-type Event struct {
-	Headers map[string]string
-	Payload map[string]any
-}
-
-// ParseEventStream reads all frames from r and calls fn for each event.
-// Returns on io.EOF or error.
 func ParseEventStream(r io.Reader, fn func(Event) error) error {
 	for {
 		event, err := readFrame(r)
@@ -32,7 +24,6 @@ func ParseEventStream(r io.Reader, fn func(Event) error) error {
 }
 
 func readFrame(r io.Reader) (Event, error) {
-	// Prelude: total_length(4) + headers_length(4) + prelude_crc(4) = 12 bytes
 	prelude := make([]byte, 12)
 	if _, err := io.ReadFull(r, prelude); err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -45,30 +36,31 @@ func readFrame(r io.Reader) (Event, error) {
 	headersLen := binary.BigEndian.Uint32(prelude[4:8])
 	preludeCRC := binary.BigEndian.Uint32(prelude[8:12])
 
-	if got := crc32.ChecksumIEEE(prelude[:8]); got != preludeCRC {
-		return Event{}, fmt.Errorf("eventstream prelude CRC mismatch: got %d want %d", got, preludeCRC)
-	}
 	if totalLen < 16 {
 		return Event{}, fmt.Errorf("eventstream frame too small: %d", totalLen)
 	}
 
-	// Read the rest: headers + payload + message_crc(4)
-	rest := make([]byte, totalLen-12)
+	if got := crc32.ChecksumIEEE(prelude[:8]); got != preludeCRC {
+		return Event{}, fmt.Errorf("eventstream prelude CRC mismatch: got %d want %d", got, preludeCRC)
+	}
+
+	restLen := int(totalLen) - 12
+	rest := make([]byte, restLen)
 	if _, err := io.ReadFull(r, rest); err != nil {
 		return Event{}, err
 	}
 
-	// Verify message CRC
 	msgCRC := binary.BigEndian.Uint32(rest[len(rest)-4:])
 	if got := crc32.ChecksumIEEE(append(prelude, rest[:len(rest)-4]...)); got != msgCRC {
 		return Event{}, fmt.Errorf("eventstream message CRC mismatch")
 	}
 
-	headers := parseHeaders(rest[:headersLen])
-	payloadBytes := rest[headersLen : len(rest)-4]
+	headers, payloadBytes := parseHeaders(rest[:headersLen]), rest[headersLen:len(rest)-4]
 
 	var payload map[string]any
-	json.Unmarshal(payloadBytes, &payload)
+	if len(payloadBytes) > 0 {
+		json.Unmarshal(payloadBytes, &payload)
+	}
 
 	return Event{Headers: headers, Payload: payload}, nil
 }
@@ -77,9 +69,6 @@ func parseHeaders(data []byte) map[string]string {
 	headers := make(map[string]string)
 	i := 0
 	for i < len(data) {
-		if i >= len(data) {
-			break
-		}
 		nameLen := int(data[i])
 		i++
 		if i+nameLen > len(data) {
@@ -87,22 +76,54 @@ func parseHeaders(data []byte) map[string]string {
 		}
 		name := string(data[i : i+nameLen])
 		i += nameLen
-
 		if i >= len(data) {
 			break
 		}
-		// type byte (7 = string)
+		valueType := data[i]
 		i++
-		if i+2 > len(data) {
-			break
+		switch valueType {
+		case 0, 1:
+			headers[name] = fmt.Sprintf("%v", valueType == 1)
+		case 2:
+			if i+1 > len(data) {
+				return headers
+			}
+			headers[name] = fmt.Sprintf("%d", int8(data[i]))
+			i++
+		case 3:
+			if i+2 > len(data) {
+				return headers
+			}
+			headers[name] = fmt.Sprintf("%d", int16(binary.BigEndian.Uint16(data[i:i+2])))
+			i += 2
+		case 4:
+			if i+4 > len(data) {
+				return headers
+			}
+			headers[name] = fmt.Sprintf("%d", int32(binary.BigEndian.Uint32(data[i:i+4])))
+			i += 4
+		case 5, 8:
+			i += 8
+		case 6, 7:
+			if i+2 > len(data) {
+				return headers
+			}
+			valLen := int(binary.BigEndian.Uint16(data[i : i+2]))
+			i += 2
+			if i+valLen > len(data) {
+				return headers
+			}
+			if valueType == 7 {
+				headers[name] = string(data[i : i+valLen])
+			} else {
+				headers[name] = string(data[i : i+valLen])
+			}
+			i += valLen
+		case 9:
+			i += 16
+		default:
+			return headers
 		}
-		valLen := int(binary.BigEndian.Uint16(data[i : i+2]))
-		i += 2
-		if i+valLen > len(data) {
-			break
-		}
-		headers[name] = string(data[i : i+valLen])
-		i += valLen
 	}
 	return headers
 }

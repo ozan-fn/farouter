@@ -6,81 +6,84 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
-type QuotaResult struct {
-	Used      int
-	Limit     int
-	Remaining int
-	ResetAt   string
-	Plan      string
-	Exhausted bool
-}
+const kiroCQAPIBase = "https://codewhisperer.us-east-1.amazonaws.com"
+const kiroQAPIBase  = "https://q.us-east-1.amazonaws.com"
 
 func FetchQuota(accessToken, profileArn, authMethod string) (*QuotaResult, error) {
-	headers := map[string]string{
-		"Authorization":    "Bearer " + accessToken,
-		"Accept":           "application/json",
-		"User-Agent":       "aws-sdk-js/1.0.0 KiroIDE",
-		"x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
-	}
-	if authMethod == "api_key" {
-		headers["tokentype"] = "API_KEY"
-	} else if authMethod == "external_idp" {
-		headers["TokenType"] = "EXTERNAL_IDP"
+	headers := buildQuotaHeaders(accessToken, authMethod)
+
+	params := url.Values{}
+	params.Set("isEmailRequired", "true")
+	params.Set("origin", "AI_EDITOR")
+	params.Set("resourceType", "AGENTIC_REQUEST")
+	if profileArn != "" {
+		params.Set("profileArn", profileArn)
 	}
 
-	// Attempt 1: GET codewhisperer
-	params := "isEmailRequired=true&origin=AI_EDITOR&resourceType=AGENTIC_REQUEST"
-	if profileArn != "" {
-		params += "&profileArn=" + profileArn
-	}
-	url1 := "https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits?" + params
-	if body, err := doGet(url1, headers); err == nil {
+	urlStr := kiroCQAPIBase + "/getUsageLimits?" + params.Encode()
+
+	if body, err := doQuotaGet(urlStr, headers); err == nil {
 		return parseQuota(body)
 	}
 
-	// Attempt 2: POST codewhisperer
 	postBody := map[string]string{"origin": "AI_EDITOR", "resourceType": "AGENTIC_REQUEST"}
 	if profileArn != "" {
 		postBody["profileArn"] = profileArn
 	}
 	postJSON, _ := json.Marshal(postBody)
-	postHeaders := map[string]string{
-		"Authorization": "Bearer " + accessToken,
-		"Content-Type":  "application/x-amz-json-1.0",
-		"x-amz-target":  "AmazonCodeWhispererService.GetUsageLimits",
-		"Accept":        "application/json",
-	}
-	if authMethod == "api_key" {
-		postHeaders["tokentype"] = "API_KEY"
-	}
-	if body, err := doPost2("https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits", postJSON, postHeaders); err == nil {
+	postHeaders := buildQuotaPostHeaders(accessToken, authMethod)
+	if body, err := doQuotaPost(kiroCQAPIBase+"/getUsageLimits", postJSON, postHeaders); err == nil {
 		return parseQuota(body)
 	}
 
-	// Attempt 3: GET q endpoint
-	qParams := "origin=AI_EDITOR&resourceType=AGENTIC_REQUEST"
+	qParams := url.Values{}
+	qParams.Set("origin", "AI_EDITOR")
+	qParams.Set("resourceType", "AGENTIC_REQUEST")
 	if profileArn != "" {
-		qParams += "&profileArn=" + profileArn
+		qParams.Set("profileArn", profileArn)
 	}
-	url3 := "https://q.us-east-1.amazonaws.com/getUsageLimits?" + qParams
-	if body, err := doGet(url3, headers); err == nil {
+	url3 := kiroQAPIBase + "/getUsageLimits?" + qParams.Encode()
+	if body, err := doQuotaGet(url3, headers); err == nil {
 		return parseQuota(body)
 	}
 
-	return nil, fmt.Errorf("all quota endpoints failed")
+	return nil, ErrQuotaAllFailed
 }
 
-func doGet(url string, headers map[string]string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func buildQuotaHeaders(accessToken, authMethod string) map[string]string {
+	h := map[string]string{
+		"Authorization":  "Bearer " + accessToken,
+		"Accept":         "application/json",
+		"User-Agent":     "aws-sdk-js/1.0.0 KiroIDE",
+		"x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+	}
+	if authMethod == "api_key" {
+		h["tokentype"] = "API_KEY"
+	} else if authMethod == "external_idp" {
+		h["TokenType"] = "EXTERNAL_IDP"
+	}
+	return h
+}
+
+func buildQuotaPostHeaders(accessToken, authMethod string) map[string]string {
+	h := buildQuotaHeaders(accessToken, authMethod)
+	h["Content-Type"] = "application/x-amz-json-1.0"
+	h["x-amz-target"] = "AmazonCodeWhispererService.GetUsageLimits"
+	return h
+}
+
+func doQuotaGet(rawURL string, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := getHttpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -91,15 +94,15 @@ func doGet(url string, headers map[string]string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func doPost2(url string, body []byte, headers map[string]string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+func doQuotaPost(rawURL string, body []byte, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodPost, rawURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := getHttpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -113,10 +116,9 @@ func doPost2(url string, body []byte, headers map[string]string) ([]byte, error)
 func parseQuota(body []byte) (*QuotaResult, error) {
 	var data struct {
 		UsageBreakdownList []struct {
-			ResourceType                string          `json:"resourceType"`
-			CurrentUsage                json.RawMessage `json:"currentUsage"`
-			UsageLimit                  json.RawMessage `json:"usageLimit"`
-			NextDateReset               json.RawMessage `json:"nextDateReset"`
+			ResourceType string          `json:"resourceType"`
+			CurrentUsage json.RawMessage `json:"currentUsage"`
+			UsageLimit   json.RawMessage `json:"usageLimit"`
 		} `json:"usageBreakdownList"`
 		SubscriptionInfo struct {
 			SubscriptionTitle string `json:"subscriptionTitle"`

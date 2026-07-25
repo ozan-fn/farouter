@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,22 +10,11 @@ import (
 
 const socialAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
 
-type TokenResult struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ProfileArn   string `json:"profileArn"`
-	ExpiresIn    int    `json:"expiresIn"`
-}
-
-type ProviderSpecificData struct {
-	AuthMethod   string `json:"authMethod"`
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
-	Region       string `json:"region"`
-	ProfileArn   string `json:"profileArn"`
-}
-
 func RefreshToken(refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
+	if isExternalIdpAuthMethod(psd.AuthMethod) && psd.TokenEndpoint != "" {
+		ctx := context.Background()
+		return refreshExternalIdpToken(ctx, refreshToken, psd)
+	}
 	if psd.ClientID != "" && psd.ClientSecret != "" {
 		return refreshAWSSSO(refreshToken, psd)
 	}
@@ -59,7 +49,7 @@ func doRefreshPost(url string, payload []byte) (*TokenResult, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := getHttpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

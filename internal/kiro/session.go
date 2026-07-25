@@ -7,20 +7,10 @@ import (
 	"time"
 )
 
-// sessionStore menyimpan sessionStart (msg0) per conversationId
-// persis seperti kiroSessionReplay.js di 9router
 var (
 	sessionMu    sync.Mutex
 	sessionStore = map[string]sessionEntry{}
 )
-
-type sessionEntry struct {
-	sessionStart        map[string]any
-	modelID             string
-	systemPrompt        string
-	continuationID      string
-	lastUsed            time.Time
-}
 
 const sessionTTL = 30 * time.Minute
 
@@ -39,7 +29,6 @@ func init() {
 	}()
 }
 
-// GetOrCreateContinuationID returns stable agentContinuationId per session
 func GetOrCreateContinuationID(conversationID string, newID func() string) string {
 	if conversationID == "" {
 		return newID()
@@ -54,11 +43,9 @@ func GetOrCreateContinuationID(conversationID string, newID func() string) strin
 	}
 	return entry.continuationID
 }
-// - First turn: freeze msg0 with contentPrefix, current turn gets currentContentPrefix only
-// - Subsequent turns: replay frozen msg0, inject currentContentPrefix into current
+
 func applySessionReplay(conversationID, modelID, systemPrompt, contentPrefix, currentTimeContext string, history []map[string]any, currentMessage map[string]any) ([]map[string]any, map[string]any) {
 	if conversationID == "" {
-		// Ephemeral — just prefix current
 		prefixUserMessage(currentMessage, contentPrefix, modelID)
 		return history, currentMessage
 	}
@@ -67,12 +54,10 @@ func applySessionReplay(conversationID, modelID, systemPrompt, contentPrefix, cu
 	existing, found := sessionStore[conversationID]
 	sessionMu.Unlock()
 
-	// Deep clone to avoid mutation
 	history = cloneMaps(history)
 	currentMessage = cloneMap(currentMessage)
 
 	if found && existing.modelID == modelID && existing.systemPrompt == systemPrompt {
-		// Replay: replace first user message in history with frozen msg0
 		sessionMu.Lock()
 		existing.lastUsed = time.Now()
 		sessionStore[conversationID] = existing
@@ -86,10 +71,8 @@ func applySessionReplay(conversationID, modelID, systemPrompt, contentPrefix, cu
 		} else {
 			history = append([]map[string]any{sessionStart}, history...)
 		}
-		// Current message gets only currentTimeContext
 		prefixUserMessage(currentMessage, currentTimeContext, modelID)
 	} else {
-		// First turn: prefix first user message in history with contentPrefix
 		firstUserIdx := findFirstUserIndex(history)
 		if firstUserIdx >= 0 {
 			prefixUserMessage(history[firstUserIdx], contentPrefix, modelID)
@@ -104,7 +87,6 @@ func applySessionReplay(conversationID, modelID, systemPrompt, contentPrefix, cu
 			sessionMu.Unlock()
 			prefixUserMessage(currentMessage, currentTimeContext, modelID)
 		} else {
-			// No history — prefix currentMessage with full contentPrefix
 			prefixUserMessage(currentMessage, contentPrefix, modelID)
 			sessionStart := cloneMap(currentMessage)
 			sessionMu.Lock()
@@ -178,9 +160,7 @@ func cloneMaps(ms []map[string]any) []map[string]any {
 	return out
 }
 
-// reconcileOrphanedToolResults mirrors reconcileOrphanedToolResults from 9router
 func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[string]any) {
-	// Phase 1: collect valid toolUseIds from assistant messages
 	validIDs := map[string]bool{}
 	for _, h := range history {
 		arm, ok := h["assistantResponseMessage"].(map[string]any)
@@ -197,7 +177,6 @@ func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[s
 		}
 	}
 
-	// Phase 2: salvage orphaned toolResults as text
 	carriers := append(history, currentMessage)
 	for _, item := range carriers {
 		uim, ok := item["userInputMessage"].(map[string]any)
@@ -242,7 +221,7 @@ func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[s
 
 		ctx["toolResults"] = kept
 		if len(kept) == 0 {
-			if tools, ok := ctx["tools"]; !ok || tools == nil {
+			if _, hasTools := ctx["tools"]; !hasTools || ctx["tools"] == nil {
 				delete(uim, "userInputMessageContext")
 			} else {
 				ctx["toolResults"] = nil

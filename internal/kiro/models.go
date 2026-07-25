@@ -5,54 +5,11 @@ import (
 	"strings"
 )
 
-const (
-	agenticSuffix  = "-agentic"
-	thinkingSuffix = "-thinking"
-
-	ThinkingBudgetDefault = 16000
-
-	DefaultProfileArnBuilderID = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
-	DefaultProfileArnSocial    = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
-
-	AutoModel = "claude-sonnet-4.5"
-
-	AgenticSystemPrompt = `# CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)
-
-You MUST follow these rules for ALL file operations. Violation causes server timeouts and task failure.
-
-## ABSOLUTE LIMITS
-- **MAXIMUM 350 LINES** per single write/edit operation - NO EXCEPTIONS
-- **RECOMMENDED 300 LINES** or less for optimal performance
-- **NEVER** write entire files in one operation if >300 lines
-
-## MANDATORY CHUNKED WRITE STRATEGY
-
-### For NEW FILES (>300 lines total):
-1. FIRST: Write initial chunk (first 250-300 lines) using write_to_file/fsWrite
-2. THEN: Append remaining content in 250-300 line chunks using file append operations
-3. REPEAT: Continue appending until complete
-
-### For EDITING EXISTING FILES:
-1. Use surgical edits (apply_diff/targeted edits) - change ONLY what's needed
-2. NEVER rewrite entire files - use incremental modifications
-3. Split large refactors into multiple small, focused edits
-
-REMEMBER: When in doubt, write LESS per operation. Multiple small operations > one large operation.`
-)
-
-type ResolvedModel struct {
-	Upstream string
-	Agentic  bool
-	Thinking bool
-}
-
 func ResolveModel(model string) ResolvedModel {
-	// Strip known prefixes
-	model = strings.TrimPrefix(model, "Kafuu/")
 	model = strings.TrimPrefix(model, "kr/")
 
 	if model == "auto" || model == "" {
-		return ResolvedModel{Upstream: AutoModel}
+		return ResolvedModel{Upstream: AutoModel, Thinking: true}
 	}
 
 	agentic := false
@@ -123,7 +80,7 @@ func BuildAdditionalModelRequestFields(effort string, model string) map[string]a
 	}
 	if supportsAdditionalFields(model) {
 		return map[string]any{
-			"thinking":      map[string]any{"type": "adaptive", "display": "summarized"},
+			"thinking": map[string]any{"type": "adaptive", "display": "summarized"},
 			"output_config": map[string]any{"effort": e},
 		}
 	}
