@@ -63,24 +63,24 @@ const Dashboard = () => {
         <>
           {/* Account status cards */}
           <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 transition hover:border-gray-600">
+            <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="text-sm text-gray-400">Active</div>
               <div className="mt-2 text-3xl font-bold text-green-400">{active}</div>
             </div>
 
-            <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 transition hover:border-gray-600">
+            <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="text-sm text-gray-400">Exhausted</div>
               <div className="mt-2 text-3xl font-bold text-yellow-400">{exhausted}</div>
             </div>
 
-            <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 transition hover:border-gray-600">
+            <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="text-sm text-gray-400">Suspended</div>
               <div className="mt-2 text-3xl font-bold text-red-400">{suspended}</div>
             </div>
           </div>
 
           {/* RTK status card */}
-          <div className="rounded-lg border border-gray-700 bg-gray-800 p-6 transition hover:border-gray-600">
+          <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm text-gray-400">RTK (Response Tool Kit)</div>
@@ -91,12 +91,12 @@ const Dashboard = () => {
               <button
                 onClick={toggleRTK}
                 disabled={rtkToggling}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800 ${
+                className={`relative inline-flex h-6 w-11 items-center transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800 ${
                   rtkEnabled ? 'bg-cyan-500' : 'bg-gray-600'
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  className={`inline-block h-4 w-4 transform bg-white transition-transform ${
                     rtkEnabled ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />

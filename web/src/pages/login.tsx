@@ -29,20 +29,20 @@ const Login = () => {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-950">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-lg border border-gray-800 bg-gray-900 p-6">
+      <form onSubmit={submit} className="w-full max-w-sm border border-gray-800 bg-gray-900/50 p-8">
         <h1 className="mb-6 text-center text-2xl font-bold text-cyan-400">farouter</h1>
         <input
           type="password"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mb-4 w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-gray-100 placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
+          className="mb-4 w-full border border-gray-700 bg-gray-800 px-3 py-2 text-gray-100 placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
           autoFocus
         />
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
         <button
           type="submit"
-          className="w-full rounded bg-cyan-600 px-4 py-2 font-medium text-white hover:bg-cyan-500"
+          className="w-full bg-cyan-600 px-4 py-2 font-medium text-white transition hover:bg-cyan-500"
         >
           Login
         </button>
