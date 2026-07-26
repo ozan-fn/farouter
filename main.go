@@ -291,7 +291,7 @@ func pickAccount(exclude map[*accountState]bool) *accountState {
 func saveConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
-	cfg := Config{}
+	cfg := Config{Password: cfgPassword}
 	rotationMu.Lock()
 	cfg.CurrentSlot = currentSlot
 	cfg.StickyCount = stickyCount

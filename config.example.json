@@ -1,5 +1,8 @@
 {
-  "stickyId": "",
+  "password": "your-dashboard-password",
+  "activeBatchIds": [],
+  "currentSlot": 0,
+  "stickyCount": 0,
   "accounts": [
     {
       "id": "your-account-uuid",
