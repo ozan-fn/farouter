@@ -71,14 +71,14 @@ type accountState struct {
 }
 
 var (
-	accounts      []*accountState
-	configMu      sync.Mutex
-	activeBatch   [3]*accountState
-	standbyQueue  []*accountState
-	currentSlot   int
-	stickyCount   int
-	rotationMu    sync.Mutex
-	bootReady     = make(chan struct{})
+	accounts     []*accountState
+	configMu     sync.Mutex
+	activeBatch  [3]*accountState
+	standbyQueue []*accountState
+	currentSlot  int
+	stickyCount  int
+	rotationMu   sync.Mutex
+	bootReady    = make(chan struct{})
 
 	sessionsMu sync.RWMutex
 	sessions   = map[string]sessionEntry{}
@@ -478,7 +478,7 @@ func main() {
 	}
 	addr := "localhost:" + port
 	log.Println("listening on http://" + addr)
-	log.Fatal(http.ListenAndServe(addr, r))
+	log.Fatal(http.ListenAndServe(":"+port, r))
 }
 
 func authMiddleware(next http.Handler) http.Handler {
