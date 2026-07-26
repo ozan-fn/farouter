@@ -6,33 +6,26 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-upload:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - name: Setup Go with auto-caching
+        uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache: true
+          cache: true # Meng-cache $GOPATH/pkg/mod dan ~/.cache/go-build secara otomatis
 
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
+      - name: Build Go binary
+        run: CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
 
-      - run: CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
+      - name: Install lftp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends lftp
 
-      - name: Cache apt
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt
-          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/deploy.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
-
-      - run: sudo apt-get update && sudo apt-get install -y lftp
-
-      - run: lftp -c "open -u ${{ secrets.FTP_USER }},${{ secrets.FTP_PASS }} ${{ secrets.FTP_HOST }}; rm -f /go/farouter; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
+      - name: Deploy via FTP
+        run: |
+          lftp -c "open -u ${{ secrets.FTP_USER }},${{ secrets.FTP_PASS }} ${{ secrets.FTP_HOST }}; rm -f /go/farouter; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
