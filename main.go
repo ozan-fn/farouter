@@ -439,28 +439,22 @@ func loadConfig() {
 			lastRefreshed := a.cfg.LastRefreshedAt
 			a.mu.Unlock()
 			if alreadyExhausted {
-				log.Printf("[%d/%d] %s: skipped (exhausted)", i+1, total, a.cfg.Label)
-				time.Sleep(1 * time.Second)
 				continue
 			}
 			if lastRefreshed != "" {
 				t, err := time.Parse(time.RFC3339, lastRefreshed)
 				if err == nil && time.Since(t) < 6*24*time.Hour {
-					log.Printf("[%d/%d] %s: skipped (recent refresh)", i+1, total, a.cfg.Label)
-					time.Sleep(1 * time.Second)
 					continue
 				}
 			}
 			creds, err := a.getCreds()
 			if err != nil {
 				log.Printf("[%d/%d] %s: refresh failed — %v", i+1, total, a.cfg.Label, err)
-				time.Sleep(1 * time.Second)
 				continue
 			}
 			quota, err := kiro.FetchQuota(creds.AccessToken, a.cfg.ProfileArn, a.cfg.AuthMethod)
 			if err != nil {
 				log.Printf("[%d/%d] %s: quota check failed — %v", i+1, total, a.cfg.Label, err)
-				time.Sleep(1 * time.Second)
 				continue
 			}
 			a.mu.Lock()
@@ -477,7 +471,6 @@ func loadConfig() {
 				log.Printf("[%d/%d] %s: quota %d/%d", i+1, total, a.cfg.Label, quota.Remaining, quota.Limit)
 			}
 			a.mu.Unlock()
-			time.Sleep(1 * time.Second)
 		}
 
 		log.Printf("bg refresh: phase 1 done, refilling batch + saving")
@@ -487,7 +480,6 @@ func loadConfig() {
 		log.Printf("bg refresh: phase 2 — rotating old tokens")
 		for _, a := range accounts {
 			a.refreshTokenIfNeeded()
-			time.Sleep(1 * time.Second)
 		}
 		saveConfig()
 
