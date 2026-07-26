@@ -120,7 +120,7 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 	kiroPR, kiroPW := io.Pipe()
 	go func() {
 		defer kiroPW.Close()
-		err := transformKiroToSSE(resp.Body, resolved.Upstream, kiroPW, nil)
+		err := transformKiroToSSE(resp.Body, resolved.Upstream, resolved.Thinking, kiroPW, nil)
 		if err != nil {
 			writeStreamError(kiroPW, 502, err.Error())
 			fmt.Fprintf(kiroPW, "data: [DONE]\n\n")
@@ -200,7 +200,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)
 	url := KiroRuntimeHost(region) + "/generateAssistantResponse"
 
-	result := doIntegrityAttempt(ctx, creds, url, filteredBody, resolved.Upstream)
+	result := doIntegrityAttempt(ctx, creds, url, filteredBody, resolved.Upstream, resolved.Thinking)
 	if result.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result.Bytes, resolved.Upstream)
 		return nil
@@ -228,7 +228,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	}
 
 	repairedBody := appendRepairInstruction(filteredBody, repairKind)
-	result2 := doIntegrityAttempt(ctx, creds, url, repairedBody, resolved.Upstream)
+	result2 := doIntegrityAttempt(ctx, creds, url, repairedBody, resolved.Upstream, resolved.Thinking)
 	if result2.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result2.Bytes, resolved.Upstream)
 		return nil
@@ -294,7 +294,7 @@ func writeIntegritySSE(w http.ResponseWriter, data []byte) {
 	}
 }
 
-func doIntegrityAttempt(ctx context.Context, creds Credentials, url string, body []byte, model string) *IntegrityResult {
+func doIntegrityAttempt(ctx context.Context, creds Credentials, url string, body []byte, model string, thinkingEnabled bool) *IntegrityResult {
 	resp, err := sendToKiroWithRetry(ctx, creds, url, body)
 	if err != nil {
 		return &IntegrityResult{
@@ -331,7 +331,7 @@ func doIntegrityAttempt(ctx context.Context, creds Credentials, url string, body
 		},
 	}
 
-	err = transformKiroToSSE(resp.Body, model, &buf, opts)
+	err = transformKiroToSSE(resp.Body, model, thinkingEnabled, &buf, opts)
 	if err != nil {
 		return &IntegrityResult{
 			Kind:    IntegrityMissingTerminal,

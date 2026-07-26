@@ -42,6 +42,9 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 	if resolved.Thinking && rawEffort == "" {
 		rawEffort = "high"
 	}
+	if !resolved.Thinking {
+		rawEffort = ""
+	}
 	kiroEffort := applyThinkingAllowlist(rawEffort, upstreamModel)
 
 	var systemPromptParts []string

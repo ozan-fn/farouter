@@ -43,6 +43,7 @@ type kiroSSEState struct {
 	created           int64
 	model             string
 	thinkingState     kiroThinkingState
+	thinkingEnabled   bool
 	totalContentLength int
 	contextUsagePct   float64
 	hasContextUsage   bool
@@ -70,20 +71,21 @@ type TransformOptions struct {
 	MaxToolBytes    int
 }
 
-func transformKiroToSSE(r io.Reader, model string, w io.Writer, opts *TransformOptions) error {
+func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Writer, opts *TransformOptions) error {
 	maxToolBytes := KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES / 2
 	if opts != nil && opts.MaxToolBytes > 0 {
 		maxToolBytes = opts.MaxToolBytes
 	}
 
 	state := &kiroSSEState{
-		tools:          make(map[string]*kiroToolBuffer),
-		toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
-		responseID:     fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli()),
-		created:        time.Now().Unix(),
-		model:          model,
-		eventCounts:    make(map[string]int),
-		transportState: "consuming_response",
+		tools:           make(map[string]*kiroToolBuffer),
+		toolArgsBuffer:  make(map[string]*kiroToolArgBuffer),
+		responseID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli()),
+		created:         time.Now().Unix(),
+		model:           model,
+		thinkingEnabled: thinkingEnabled,
+		eventCounts:     make(map[string]int),
+		transportState:  "consuming_response",
 	}
 
 	emitDelta := func(delta map[string]any) {
@@ -178,10 +180,16 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer, opts *TransformO
 		switch eventType {
 		case "assistantResponseEvent":
 			content, _ := event.Payload["content"].(string)
-			splitInlineThinking(&state.thinkingState, content, onContent, onReasoning)
+			if state.thinkingEnabled {
+				splitInlineThinking(&state.thinkingState, content, onContent, onReasoning)
+			} else {
+				onContent(content)
+			}
 
 		case "reasoningContentEvent":
-			handleKiroReasoningEvent(event.Payload, emitDelta, state)
+			if state.thinkingEnabled {
+				handleKiroReasoningEvent(event.Payload, emitDelta, state)
+			}
 
 		case "codeEvent":
 			content, _ := event.Payload["content"].(string)
