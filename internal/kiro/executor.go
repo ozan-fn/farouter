@@ -51,32 +51,65 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 	filteredBody := transformRequestPayload(kiroBody)
 
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)
-	url := KiroRuntimeHost(region) + "/generateAssistantResponse"
+	urls := GetOrderedBaseURLs(creds, region)
 
-	resp, err := sendToKiroWithRetry(ctx, creds, url, filteredBody)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == http.StatusPaymentRequired {
-			return ErrExhausted
-		}
-		if resp.StatusCode == http.StatusForbidden {
-			var e struct {
-				Reason  string `json:"reason"`
-				Message string `json:"message"`
+	var lastErr error
+	var lastStatus int
+	for urlIndex, url := range urls {
+		resp, err := sendToKiroEndpoint(ctx, creds, url, filteredBody)
+		if err != nil {
+			lastErr = err
+			if urlIndex+1 < len(urls) {
+				continue
 			}
-			json.Unmarshal(errBody, &e)
-			if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
-				return ErrSuspended
-			}
+			return fmt.Errorf("kiro: all %d endpoints failed: %w", len(urls), lastErr)
 		}
-		return fmt.Errorf("kiro upstream: %s — %s", resp.Status, string(errBody))
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("429 from %s", url)
+			lastStatus = resp.StatusCode
+			if urlIndex+1 < len(urls) {
+				continue
+			}
+			return fmt.Errorf("kiro: all %d endpoints returned 429", len(urls))
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusPaymentRequired {
+				return ErrExhausted
+			}
+			if resp.StatusCode == http.StatusForbidden {
+				var e struct {
+					Reason  string `json:"reason"`
+					Message string `json:"message"`
+				}
+				json.Unmarshal(errBody, &e)
+				if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
+					return ErrSuspended
+				}
+			}
+			lastErr = fmt.Errorf("kiro upstream: %s — %s", resp.Status, string(errBody))
+			lastStatus = resp.StatusCode
+			if urlIndex+1 < len(urls) {
+				continue
+			}
+			return lastErr
+		}
+
+		defer resp.Body.Close()
+		return pipeKiroResponse(ctx, resp, w, resolved)
 	}
 
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("kiro: all %d endpoints failed with status %d", len(urls), lastStatus)
+}
+
+func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseWriter, resolved ResolvedModel) error {
 	// Content-type validation (streamingHandler.js:62-80)
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "application/json") {
@@ -198,9 +231,9 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 
 	filteredBody := transformRequestPayload(kiroBody)
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)
-	url := KiroRuntimeHost(region) + "/generateAssistantResponse"
+	urls := GetOrderedBaseURLs(creds, region)
 
-	result := doIntegrityAttempt(ctx, creds, url, filteredBody, resolved.Upstream, resolved.Thinking)
+	result := doIntegrityAttemptWithFallback(ctx, creds, urls, filteredBody, resolved.Upstream, resolved.Thinking)
 	if result.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result.Bytes, resolved.Upstream)
 		return nil
@@ -226,7 +259,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 		writeIntegritySSE(w, encodeSSEErrorWithDiagnostics("kiro_integrity_failed", "Kiro integrity validation failed: "+result.Message, result.Diagnostics))
 		return nil
 	}
-
+	
 	repairedBody := appendRepairInstruction(filteredBody, repairKind)
 	
 	// Start heartbeat during repair to keep connection alive
@@ -250,7 +283,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 		}
 	}()
 	
-	result2 := doIntegrityAttempt(ctx, creds, url, repairedBody, resolved.Upstream, resolved.Thinking)
+	result2 := doIntegrityAttemptWithFallback(ctx, creds, urls, repairedBody, resolved.Upstream, resolved.Thinking)
 	if result2.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result2.Bytes, resolved.Upstream)
 		return nil
@@ -316,34 +349,67 @@ func writeIntegritySSE(w http.ResponseWriter, data []byte) {
 	}
 }
 
-func doIntegrityAttempt(ctx context.Context, creds Credentials, url string, body []byte, model string, thinkingEnabled bool) *IntegrityResult {
-	resp, err := sendToKiroWithRetry(ctx, creds, url, body)
-	if err != nil {
-		return &IntegrityResult{
-			Kind:    IntegrityAccountError,
-			Message: err.Error(),
-		}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == http.StatusPaymentRequired {
-			return &IntegrityResult{Kind: IntegrityAccountError, Message: ErrExhausted.Error()}
-		}
-		if resp.StatusCode == http.StatusForbidden {
-			var e struct {
-				Reason  string `json:"reason"`
-				Message string `json:"message"`
+func doIntegrityAttemptWithFallback(ctx context.Context, creds Credentials, urls []string, body []byte, model string, thinkingEnabled bool) *IntegrityResult {
+	var lastErr error
+	for urlIndex, url := range urls {
+		resp, err := sendToKiroEndpoint(ctx, creds, url, body)
+		if err != nil {
+			lastErr = err
+			if urlIndex+1 < len(urls) {
+				continue
 			}
-			json.Unmarshal(errBody, &e)
-			if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
-				return &IntegrityResult{Kind: IntegrityAccountError, Message: ErrSuspended.Error()}
+			return &IntegrityResult{
+				Kind:    IntegrityAccountError,
+				Message: fmt.Sprintf("all %d endpoints failed: %v", len(urls), lastErr),
 			}
 		}
-		return &IntegrityResult{Kind: IntegrityAccountError, Message: fmt.Sprintf("kiro upstream: %s — %s", resp.Status, string(errBody))}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("429 from %s", url)
+			if urlIndex+1 < len(urls) {
+				continue
+			}
+			return &IntegrityResult{
+				Kind:    IntegrityAccountError,
+				Message: fmt.Sprintf("all %d endpoints returned 429", len(urls)),
+			}
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusPaymentRequired {
+				return &IntegrityResult{Kind: IntegrityAccountError, Message: ErrExhausted.Error()}
+			}
+			if resp.StatusCode == http.StatusForbidden {
+				var e struct {
+					Reason  string `json:"reason"`
+					Message string `json:"message"`
+				}
+				json.Unmarshal(errBody, &e)
+				if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
+					return &IntegrityResult{Kind: IntegrityAccountError, Message: ErrSuspended.Error()}
+				}
+			}
+			lastErr = fmt.Errorf("kiro upstream: %s — %s", resp.Status, string(errBody))
+			if urlIndex+1 < len(urls) {
+				continue
+			}
+			return &IntegrityResult{Kind: IntegrityAccountError, Message: lastErr.Error()}
+		}
+
+		defer resp.Body.Close()
+		return processIntegrityResponse(resp, model, thinkingEnabled)
 	}
 
+	return &IntegrityResult{
+		Kind:    IntegrityAccountError,
+		Message: fmt.Sprintf("all %d endpoints failed: %v", len(urls), lastErr),
+	}
+}
+
+func processIntegrityResponse(resp *http.Response, model string, thinkingEnabled bool) *IntegrityResult {
 	var buf bytes.Buffer
 	var diagResult *IntegrityDiagnostics
 
@@ -353,7 +419,7 @@ func doIntegrityAttempt(ctx context.Context, creds Credentials, url string, body
 		},
 	}
 
-	err = transformKiroToSSE(resp.Body, model, thinkingEnabled, &buf, opts)
+	err := transformKiroToSSE(resp.Body, model, thinkingEnabled, &buf, opts)
 	if err != nil {
 		return &IntegrityResult{
 			Kind:    IntegrityMissingTerminal,

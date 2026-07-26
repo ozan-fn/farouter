@@ -45,64 +45,42 @@ func GetOrCreateContinuationID(conversationID string, newID func() string) strin
 }
 
 func applySessionReplay(conversationID, modelID, systemPrompt, contentPrefix, currentTimeContext string, history []map[string]any, currentMessage map[string]any) ([]map[string]any, map[string]any) {
-	if conversationID == "" {
-		prefixUserMessage(currentMessage, contentPrefix, modelID)
-		return history, currentMessage
-	}
-
-	sessionMu.Lock()
-	existing, found := sessionStore[conversationID]
-	sessionMu.Unlock()
-
-	history = cloneMaps(history)
-	currentMessage = cloneMap(currentMessage)
-
-	if found && existing.modelID == modelID && existing.systemPrompt == systemPrompt {
+	// Unified approach: ALWAYS prefix currentMessage with full contentPrefix
+	// NO sessionStart injection, NO history manipulation
+	// Result: Request 1 = Request 2 = Request 3 = ... (consistent structure)
+	
+	prefixUserMessage(currentMessage, contentPrefix, modelID)
+	
+	// Optional: Still track sessions for analytics/logging purposes
+	// but don't use it to modify request structure
+	if conversationID != "" {
 		sessionMu.Lock()
-		existing.lastUsed = time.Now()
-		sessionStore[conversationID] = existing
+		sessionStore[conversationID] = sessionEntry{
+			modelID:      modelID,
+			systemPrompt: systemPrompt,
+			sessionStart: cloneMap(currentMessage), // Track for logging only
+			lastUsed:     time.Now(),
+		}
+		// Cleanup old sessions
+		if len(sessionStore) >= 5000 {
+			oldest := ""
+			var oldestTime time.Time
+			for k, v := range sessionStore {
+				if oldest == "" || v.lastUsed.Before(oldestTime) {
+					oldest = k
+					oldestTime = v.lastUsed
+				}
+			}
+			if oldest != "" {
+				delete(sessionStore, oldest)
+			}
+		}
 		sessionMu.Unlock()
-
-		firstUserIdx := findFirstUserIndex(history)
-		sessionStart := cloneMap(existing.sessionStart)
-		ensureModelID(sessionStart, modelID)
-		if firstUserIdx >= 0 {
-			history[firstUserIdx] = sessionStart
-		} else {
-			history = append([]map[string]any{sessionStart}, history...)
-		}
-		prefixUserMessage(currentMessage, currentTimeContext, modelID)
-	} else {
-		firstUserIdx := findFirstUserIndex(history)
-		if firstUserIdx >= 0 {
-			prefixUserMessage(history[firstUserIdx], contentPrefix, modelID)
-			sessionStart := cloneMap(history[firstUserIdx])
-			sessionMu.Lock()
-			sessionStore[conversationID] = sessionEntry{
-				sessionStart: sessionStart,
-				modelID:      modelID,
-				systemPrompt: systemPrompt,
-				lastUsed:     time.Now(),
-			}
-			sessionMu.Unlock()
-			prefixUserMessage(currentMessage, currentTimeContext, modelID)
-		} else {
-			prefixUserMessage(currentMessage, contentPrefix, modelID)
-			sessionStart := cloneMap(currentMessage)
-			sessionMu.Lock()
-			sessionStore[conversationID] = sessionEntry{
-				sessionStart: sessionStart,
-				modelID:      modelID,
-				systemPrompt: systemPrompt,
-				lastUsed:     time.Now(),
-			}
-			sessionMu.Unlock()
-		}
 	}
-
-	ensureHistoryModelIDs(history, modelID)
+	
 	return history, currentMessage
 }
+
 
 func findFirstUserIndex(history []map[string]any) int {
 	for i, h := range history {

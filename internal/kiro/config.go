@@ -135,6 +135,30 @@ func isExternalIdpAuthMethod(authMethod string) bool {
 	return strings.ToLower(strings.TrimSpace(authMethod)) == KIRO_EXTERNAL_IDP_AUTH_METHOD
 }
 
+// GetOrderedBaseURLs returns the fallback chain of Kiro endpoints.
+// Auth-method routing: api_key/external_idp/idc → amazonaws.com first (kiro.dev rejects these tokens).
+// Region substitution: replace us-east-1 with token region in amazonaws.com URLs.
+func GetOrderedBaseURLs(creds Credentials, region string) []string {
+	authMethod := creds.PSD.AuthMethod
+	isCodeWhispererSurface := authMethod == "api_key" || authMethod == "external_idp" || authMethod == "idc"
+
+	var urls []string
+	if isCodeWhispererSurface {
+		urls = []string{
+			regionalizeURL("https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse", region),
+			regionalizeURL("https://q.us-east-1.amazonaws.com/generateAssistantResponse", region),
+			"https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+		}
+	} else {
+		urls = []string{
+			"https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+			regionalizeURL("https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse", region),
+			regionalizeURL("https://q.us-east-1.amazonaws.com/generateAssistantResponse", region),
+		}
+	}
+	return urls
+}
+
 // ResolveRuntimeRegion resolves the runtime region for Kiro API calls.
 // Priority: profileArn region > stored region (if valid profile region) > us-east-1.
 func ResolveRuntimeRegion(storedRegion, profileArn string) string {
