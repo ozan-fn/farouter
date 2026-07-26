@@ -3,13 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +23,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+//go:embed web/dist
+var distFS embed.FS
+
+var distSubFS fs.FS
+
+func init() {
+	var err error
+	distSubFS, err = fs.Sub(distFS, "web/dist")
+	if err != nil {
+		log.Fatalf("embed sub: %v", err)
+	}
+}
 
 const (
 	kiroAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
@@ -39,10 +57,15 @@ type AccountConfig struct {
 }
 
 type Config struct {
+	Password       string          `json:"password,omitempty"`
 	ActiveBatchIds []string        `json:"activeBatchIds,omitempty"`
 	CurrentSlot    int             `json:"currentSlot,omitempty"`
 	StickyCount    int             `json:"stickyCount,omitempty"`
 	Accounts       []AccountConfig `json:"accounts"`
+}
+
+type sessionEntry struct {
+	expires time.Time
 }
 
 type accountState struct {
@@ -65,6 +88,11 @@ var (
 	stickyCount   int
 	rotationMu    sync.Mutex
 	bootReady     = make(chan struct{})
+
+	sessionsMu sync.RWMutex
+	sessions   = map[string]sessionEntry{}
+
+	cfgPassword string
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -309,6 +337,7 @@ func loadConfig() {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		log.Fatalf("parse config: %v", err)
 	}
+	cfgPassword = cfg.Password
 	now := time.Now()
 	for _, a := range cfg.Accounts {
 		if a.RefreshToken == "" {
@@ -439,13 +468,18 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("farouter ok"))
+	r.Post("/api/login", handleLogin)
+	r.Get("/api/verify", handleVerify)
+
+	r.Group(func(r chi.Router) {
+		r.Use(authMiddleware)
+		r.Get("/status", handleStatus)
+		r.Post("/accounts/reset", handleReset)
+		r.Post("/auth/kiro/refresh", handleKiroRefresh)
+		r.Post("/v1/chat/completions", handleChatCompletions)
 	})
-	r.Get("/status", handleStatus)
-	r.Post("/accounts/reset", handleReset)
-	r.Post("/auth/kiro/refresh", handleKiroRefresh)
-	r.Post("/v1/chat/completions", handleChatCompletions)
+
+	r.Handle("/*", staticFileServer(http.FS(distSubFS)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -453,6 +487,94 @@ func main() {
 	}
 	log.Println("listening on :" + port)
 	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := ""
+		if c, err := r.Cookie("session"); err == nil {
+			token = c.Value
+		}
+		if token == "" {
+			token = r.Header.Get("Authorization")
+			if strings.HasPrefix(token, "Bearer ") {
+				token = token[7:]
+			}
+		}
+		sessionsMu.RLock()
+		s, ok := sessions[token]
+		if ok && time.Now().After(s.expires) {
+			delete(sessions, token)
+			ok = false
+		}
+		sessionsMu.RUnlock()
+		if !ok {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	if cfgPassword == "" || body.Password != cfgPassword {
+		http.Error(w, `{"error":"wrong password"}`, http.StatusUnauthorized)
+		return
+	}
+	b := make([]byte, 32)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+
+	sessionsMu.Lock()
+	sessions[token] = sessionEntry{expires: time.Now().Add(24 * time.Hour)}
+	sessionsMu.Unlock()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   86400,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": token})
+}
+
+func handleVerify(w http.ResponseWriter, r *http.Request) {
+	token := ""
+	if c, err := r.Cookie("session"); err == nil {
+		token = c.Value
+	}
+	if token == "" {
+		token = r.Header.Get("Authorization")
+		if strings.HasPrefix(token, "Bearer ") {
+			token = token[7:]
+		}
+	}
+	sessionsMu.RLock()
+	s, ok := sessions[token]
+	if ok && time.Now().After(s.expires) {
+		delete(sessions, token)
+		ok = false
+	}
+	sessionsMu.RUnlock()
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{"ok": false})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -674,4 +796,47 @@ func proxyJSON(w http.ResponseWriter, url string, payload []byte) {
 func mustMarshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func staticFileServer(fsys http.FileSystem) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if name == "" {
+			name = "index.html"
+		}
+
+		if acceptsBrotli(r) {
+			f, err := fsys.Open(name + ".br")
+			if err == nil {
+				defer f.Close()
+				stat, _ := f.Stat()
+				w.Header().Set("Content-Encoding", "br")
+				http.ServeContent(w, r, name, stat.ModTime(), f)
+				return
+			}
+		}
+
+		f, err := fsys.Open(name)
+		if err != nil {
+			f, err = fsys.Open("index.html")
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		defer f.Close()
+		stat, _ := f.Stat()
+		http.ServeContent(w, r, name, stat.ModTime(), f)
+	})
+}
+
+func acceptsBrotli(r *http.Request) bool {
+	for _, v := range r.Header.Values("Accept-Encoding") {
+		for _, e := range strings.Split(v, ",") {
+			if strings.TrimSpace(e) == "br" {
+				return true
+			}
+		}
+	}
+	return false
 }

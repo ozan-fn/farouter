@@ -25,6 +25,14 @@ jobs:
 
       - run: CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
 
+      - name: Cache apt
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/deploy.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
       - run: sudo apt-get update && sudo apt-get install -y lftp
 
       - run: lftp -c "open -u ${{ secrets.FTP_USER }},${{ secrets.FTP_PASS }} ${{ secrets.FTP_HOST }}; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
