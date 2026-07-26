@@ -1,0 +1,30 @@
+name: deploy farouter
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - run: CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
+
+      - run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - run: lftp -c "open -u ${{ secrets.FTP_USER }},${{ secrets.FTP_PASS }} ${{ secrets.FTP_HOST }}; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
