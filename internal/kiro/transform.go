@@ -136,7 +136,7 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 			delete(payload, "topP")
 		}
 	} else {
-		additionalFields := BuildAdditionalModelRequestFields(req.ReasoningEffort, upstreamModel)
+		additionalFields := BuildAdditionalModelRequestFields(rawEffort, upstreamModel)
 		if additionalFields != nil {
 			payload["additionalModelRequestFields"] = additionalFields
 		}
