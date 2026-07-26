@@ -461,13 +461,13 @@ func main() {
 
 	r.Post("/api/login", handleLogin)
 	r.Get("/api/verify", handleVerify)
+	r.Post("/v1/chat/completions", handleChatCompletions)
 
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware)
 		r.Get("/status", handleStatus)
 		r.Post("/accounts/reset", handleReset)
 		r.Post("/auth/kiro/refresh", handleKiroRefresh)
-		r.Post("/v1/chat/completions", handleChatCompletions)
 	})
 
 	serveSPA(r, distFS, "web/dist")
