@@ -597,6 +597,20 @@ func ensureAlternatingRoles(history []map[string]any) []map[string]any {
 }
 
 func fixOrphanedToolResults(history []map[string]any) {
+	// Phase 1: Collect all valid toolUseIds from assistant messages in history
+	validIds := make(map[string]bool)
+	for _, h := range history {
+		arm, _ := h["assistantResponseMessage"].(map[string]any)
+		tuArr, _ := arm["toolUses"].([]any)
+		for _, tu := range tuArr {
+			m, _ := tu.(map[string]any)
+			if id, ok := m["toolUseId"].(string); ok && id != "" {
+				validIds[id] = true
+			}
+		}
+	}
+
+	// Phase 2: Filter toolResults by valid IDs, salvage orphaned ones as text
 	for i := 0; i < len(history); i++ {
 		item := history[i]
 		uim, ok := item["userInputMessage"].(map[string]any)
@@ -611,38 +625,53 @@ func fixOrphanedToolResults(history []map[string]any) {
 		if len(trArr) == 0 {
 			continue
 		}
-		prev := history[i-1]
-		arm, _ := prev["assistantResponseMessage"].(map[string]any)
-		tuArr, _ := arm["toolUses"].([]any)
-		if len(tuArr) > 0 {
-			continue
-		}
-		var texts []string
+
+		var kept []any
+		var salvaged []string
 		for _, tr := range trArr {
 			m, _ := tr.(map[string]any)
 			id, _ := m["toolUseId"].(string)
-			content, _ := m["content"].([]any)
-			var txt string
-			for _, c := range content {
-				cm, _ := c.(map[string]any)
-				if t, ok := cm["text"].(string); ok {
-					txt += t
+			
+			if validIds[id] {
+				// Valid tool result, keep it
+				kept = append(kept, tr)
+			} else {
+				// Orphaned tool result, salvage as text
+				content, _ := m["content"].([]any)
+				var txt string
+				for _, c := range content {
+					cm, _ := c.(map[string]any)
+					if t, ok := cm["text"].(string); ok {
+						txt += t
+					}
+				}
+				if id != "" {
+					salvaged = append(salvaged, fmt.Sprintf("[Tool Result (%s)]\n%s", id, txt))
+				} else {
+					salvaged = append(salvaged, fmt.Sprintf("[Tool Result]\n%s", txt))
 				}
 			}
-			if id != "" {
-				texts = append(texts, fmt.Sprintf("[Tool Result (%s)]\n%s", id, txt))
+		}
+
+		// Update toolResults with kept items only
+		if len(kept) > 0 {
+			ctx["toolResults"] = kept
+		} else {
+			delete(ctx, "toolResults")
+		}
+
+		// Prepend salvaged text to user message content
+		if len(salvaged) > 0 {
+			existing, _ := uim["content"].(string)
+			joined := strings.Join(salvaged, "\n\n")
+			if existing != "" {
+				uim["content"] = joined + "\n\n" + existing
 			} else {
-				texts = append(texts, fmt.Sprintf("[Tool Result]\n%s", txt))
+				uim["content"] = joined
 			}
 		}
-		existing, _ := uim["content"].(string)
-		joined := strings.Join(texts, "\n\n")
-		if existing != "" {
-			uim["content"] = existing + "\n\n" + joined
-		} else {
-			uim["content"] = joined
-		}
-		delete(ctx, "toolResults")
+
+		// Cleanup empty context
 		if len(ctx) == 0 {
 			delete(uim, "userInputMessageContext")
 		}
@@ -665,41 +694,67 @@ func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[s
 	if len(trArr) == 0 {
 		return
 	}
-	var lastHistory map[string]any
-	if len(history) > 0 {
-		lastHistory = history[len(history)-1]
+
+	// Phase 1: Collect all valid toolUseIds from assistant messages in history
+	validIds := make(map[string]bool)
+	for _, h := range history {
+		arm, _ := h["assistantResponseMessage"].(map[string]any)
+		tuArr, _ := arm["toolUses"].([]any)
+		for _, tu := range tuArr {
+			m, _ := tu.(map[string]any)
+			if id, ok := m["toolUseId"].(string); ok && id != "" {
+				validIds[id] = true
+			}
+		}
 	}
-	arm, _ := lastHistory["assistantResponseMessage"].(map[string]any)
-	tuArr, _ := arm["toolUses"].([]any)
-	if len(tuArr) > 0 {
-		return
-	}
-	var texts []string
+
+	// Phase 2: Filter toolResults by valid IDs, salvage orphaned ones as text
+	var kept []any
+	var salvaged []string
 	for _, tr := range trArr {
 		m, _ := tr.(map[string]any)
 		id, _ := m["toolUseId"].(string)
-		content, _ := m["content"].([]any)
-		var txt string
-		for _, c := range content {
-			cm, _ := c.(map[string]any)
-			if t, ok := cm["text"].(string); ok {
-				txt += t
+		
+		if validIds[id] {
+			// Valid tool result, keep it
+			kept = append(kept, tr)
+		} else {
+			// Orphaned tool result, salvage as text
+			content, _ := m["content"].([]any)
+			var txt string
+			for _, c := range content {
+				cm, _ := c.(map[string]any)
+				if t, ok := cm["text"].(string); ok {
+					txt += t
+				}
+			}
+			if id != "" {
+				salvaged = append(salvaged, fmt.Sprintf("[Tool Result (%s)]\n%s", id, txt))
+			} else {
+				salvaged = append(salvaged, fmt.Sprintf("[Tool Result]\n%s", txt))
 			}
 		}
-		if id != "" {
-			texts = append(texts, fmt.Sprintf("[Tool Result (%s)]\n%s", id, txt))
+	}
+
+	// Update toolResults with kept items only
+	if len(kept) > 0 {
+		ctx["toolResults"] = kept
+	} else {
+		delete(ctx, "toolResults")
+	}
+
+	// Prepend salvaged text to user message content
+	if len(salvaged) > 0 {
+		existing, _ := uim["content"].(string)
+		joined := strings.Join(salvaged, "\n\n")
+		if existing != "" {
+			uim["content"] = joined + "\n\n" + existing
 		} else {
-			texts = append(texts, fmt.Sprintf("[Tool Result]\n%s", txt))
+			uim["content"] = joined
 		}
 	}
-	existing, _ := uim["content"].(string)
-	joined := strings.Join(texts, "\n\n")
-	if existing != "" {
-		uim["content"] = existing + "\n\n" + joined
-	} else {
-		uim["content"] = joined
-	}
-	delete(ctx, "toolResults")
+
+	// Cleanup empty context
 	if len(ctx) == 0 {
 		delete(uim, "userInputMessageContext")
 	}
