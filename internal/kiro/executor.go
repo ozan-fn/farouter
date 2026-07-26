@@ -228,6 +228,28 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	}
 
 	repairedBody := appendRepairInstruction(filteredBody, repairKind)
+	
+	// Start heartbeat during repair to keep connection alive
+	heartbeatStop := make(chan struct{})
+	defer close(heartbeatStop)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				w.Write([]byte(": heartbeat\n\n"))
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			case <-heartbeatStop:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	
 	result2 := doIntegrityAttempt(ctx, creds, url, repairedBody, resolved.Upstream, resolved.Thinking)
 	if result2.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result2.Bytes, resolved.Upstream)
