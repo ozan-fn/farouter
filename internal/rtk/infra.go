@@ -538,10 +538,159 @@ func (p *DockerLogsParser) Parse(output string) string {
 	// Show last 30 lines
 	last := lines[len(lines)-30:]
 	return "... (showing last 30 lines)\n" + strings.Join(last, "\n")
+}// ── bun ─────────────────────────────────────────────────────────────────────
+type BunParser struct{}
+
+func (p *BunParser) Name() string { return "bun" }
+
+func (p *BunParser) Match(output string) bool {
+	return strings.Contains(output, "bun ") || strings.Contains(output, "bun:") ||
+		strings.Contains(output, "Saved lockfile") || strings.Contains(output, "bun install") ||
+		strings.Contains(output, "packages installed") || strings.Contains(output, "checked")
+}
+
+func (p *BunParser) Parse(output string) string {
+	lines := strings.Split(output, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.Contains(trimmed, "│") {
+			continue
+		}
+		if strings.Contains(trimmed, "Saved lockfile") || strings.Contains(trimmed, "installed") ||
+			strings.Contains(trimmed, "checked") || strings.Contains(trimmed, "up to date") ||
+			strings.Contains(trimmed, "error") || strings.Contains(trimmed, "Error") ||
+			strings.Contains(trimmed, "warn") {
+			result = append(result, trimmed)
+		}
+	}
+	if len(result) == 0 {
+		return "ok"
+	}
+	return strings.Join(result, "\n")
+}
+
+// ── podman ──────────────────────────────────────────────────────────────────
+type PodmanParser struct{}
+
+func (p *PodmanParser) Name() string { return "podman" }
+
+func (p *PodmanParser) Match(output string) bool {
+	return strings.Contains(output, "podman ") || strings.Contains(output, "podman:") ||
+		strings.Contains(output, "CONTAINER ID") && strings.Contains(output, "IMAGE")
+}
+
+func (p *PodmanParser) Parse(output string) string {
+	lines := strings.Split(output, "\n")
+	var result []string
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || i == 0 {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 4 {
+			continue
+		}
+		name := fields[len(fields)-1]
+		id := fields[0]
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		image := fields[1]
+		compact := id + " " + image
+		// extract status
+		for j := 2; j < len(fields)-1; j++ {
+			if fields[j] == "Up" || fields[j] == "Exited" || fields[j] == "Created" {
+				status := fields[j]
+				for k := j + 1; k < len(fields)-1; k++ {
+					if strings.Contains(fields[k], ":") || strings.Contains(fields[k], "0.0.0.0:") {
+						break
+					}
+					status += " " + fields[k]
+				}
+				compact += " (" + status + ")"
+				break
+			}
+		}
+		compact += " " + name
+		result = append(result, compact)
+	}
+	if len(result) == 0 {
+		return "(no containers)"
+	}
+	return strings.Join(result, "\n")
+}
+
+// ── gcloud ──────────────────────────────────────────────────────────────────
+type GcloudParser struct{}
+
+func (p *GcloudParser) Name() string { return "gcloud" }
+
+func (p *GcloudParser) Match(output string) bool {
+	return strings.Contains(output, "gcloud ") || strings.Contains(output, "gcloud:") ||
+		strings.Contains(output, "ERROR: (gcloud)") || strings.Contains(output, "Updated property")
+}
+
+func (p *GcloudParser) Parse(output string) string {
+	lines := strings.Split(output, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "ERROR") || strings.Contains(trimmed, "error") ||
+			strings.Contains(trimmed, "Updated") || strings.Contains(trimmed, "Created") ||
+			strings.Contains(trimmed, "Deleted") || strings.Contains(trimmed, "done") ||
+			strings.Contains(trimmed, "✓") || strings.Contains(trimmed, "✔") {
+			if len(result) < 15 {
+				result = append(result, trimmed)
+			}
+		}
+	}
+	if len(result) == 0 {
+		return "ok"
+	}
+	return strings.Join(result, "\n")
+}
+
+// ── mysql ───────────────────────────────────────────────────────────────────
+type MysqlParser struct{}
+
+func (p *MysqlParser) Name() string { return "mysql" }
+
+func (p *MysqlParser) Match(output string) bool {
+	return strings.Contains(output, "mysql: ") || strings.Contains(output, "mysql ") ||
+		strings.Contains(output, "ERROR ") && strings.Contains(output, "MySQL") ||
+		strings.Contains(output, "row in set") || strings.Contains(output, "rows in set") ||
+		strings.Contains(output, "Query OK")
+}
+
+func (p *MysqlParser) Parse(output string) string {
+	lines := strings.Split(output, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "row in set") || strings.Contains(trimmed, "Query OK") ||
+			strings.Contains(trimmed, "ERROR") || strings.Contains(trimmed, "error") ||
+			strings.Contains(trimmed, "Warning") || strings.Contains(trimmed, "warn") {
+			result = append(result, trimmed)
+		}
+	}
+	if len(result) == 0 {
+		return "(empty result)"
+	}
+	if len(result) > 15 {
+		result = result[:15]
+	}
+	return strings.Join(result, "\n")
 }
 
 // ── aws ─────────────────────────────────────────────────────────────────────
-
 type AwsParser struct{}
 
 func (p *AwsParser) Name() string { return "aws" }

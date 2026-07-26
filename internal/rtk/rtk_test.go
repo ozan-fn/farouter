@@ -174,6 +174,111 @@ def987654321   redis:7        "docker-entrypoint.s…"   2 hours ago    Up 2 hou
 	}
 }
 
+// ── New parsers ────────────────────────────────────────────────────────────
+
+func TestBunParser(t *testing.T) {
+	input := `bun install v1.0.0
+  + 12 packages installed
+  [1.00s] saved lockfile`
+
+	p := &BunParser{}
+	if !p.Match(input) {
+		t.Fatal("BunParser should match bun install output")
+	}
+
+	result := p.Parse(input)
+	if !strings.Contains(result, "installed") {
+		t.Errorf("Expected install summary, got: %s", result)
+	}
+}
+
+func TestPodmanParser(t *testing.T) {
+	input := `CONTAINER ID  IMAGE                           COMMAND               CREATED         STATUS             PORTS                   NAMES
+b9a3f1e2c4d5  docker.io/library/nginx:latest   nginx -g daemon o...  2 minutes ago   Up 2 minutes       0.0.0.0:8080->80/tcp  web-app`
+
+	p := &PodmanParser{}
+	if !p.Match(input) {
+		t.Fatal("PodmanParser should match podman ps output")
+	}
+
+	result := p.Parse(input)
+	if !strings.Contains(result, "b9a3f1e2c4d5") {
+		t.Errorf("Expected container ID, got: %s", result)
+	}
+	if !strings.Contains(result, "Up 2 minutes") {
+		t.Errorf("Expected status, got: %s", result)
+	}
+}
+
+func TestGcloudParser(t *testing.T) {
+	input := `gcloud auth login
+Your browser has been opened to visit:
+
+    https://accounts.google.com/o/oauth2/auth?...
+
+ERROR: (gcloud) Failed to authenticate.`
+
+	p := &GcloudParser{}
+	if !p.Match(input) {
+		t.Fatal("GcloudParser should match gcloud error output")
+	}
+
+	result := p.Parse(input)
+	if !strings.Contains(result, "ERROR") {
+		t.Errorf("Expected ERROR in output, got: %s", result)
+	}
+}
+
+func TestGcloudOk(t *testing.T) {
+	input := `gcloud config set project my-project
+Updated property [core/project].`
+
+	p := &GcloudParser{}
+	if !p.Match(input) {
+		t.Fatal("GcloudParser should match gcloud config output")
+	}
+
+	result := p.Parse(input)
+	if !strings.Contains(result, "Updated") {
+		t.Errorf("Expected Updated, got: %s", result)
+	}
+}
+
+func TestMysqlParser(t *testing.T) {
+	input := `mysql> SELECT COUNT(*) FROM users;
++----------+
+| COUNT(*) |
++----------+
+|       42 |
++----------+
+1 row in set (0.01 sec)`
+
+	p := &MysqlParser{}
+	if !p.Match(input) {
+		t.Fatal("MysqlParser should match mysql query output")
+	}
+
+	result := p.Parse(input)
+	if !strings.Contains(result, "row in set") {
+		t.Errorf("Expected 'row in set', got: %s", result)
+	}
+}
+
+func TestMysqlError(t *testing.T) {
+	input := `mysql: [Warning] Using a password on the command line interface can be insecure.
+ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: YES)`
+
+	p := &MysqlParser{}
+	if !p.Match(input) {
+		t.Fatal("MysqlParser should match mysql error output")
+	}
+
+	result := p.Parse(input)
+	if !strings.Contains(result, "ERROR") {
+		t.Errorf("Expected ERROR, got: %s", result)
+	}
+}
+
 func TestGenericParser(t *testing.T) {
 	input := strings.Repeat("line\n", 100)
 	
