@@ -72,22 +72,22 @@ type accountState struct {
 	mu            sync.Mutex
 }
 
+const stickyTarget = 3
+
 var (
-	accounts     []*accountState
-	configMu     sync.Mutex
-	activeBatch  [3]*accountState
-	standbyQueue []*accountState
-	currentSlot  int
-	stickyCount  int
-	rotationMu   sync.Mutex
-	bootReady    = make(chan struct{})
-
-	sessionsMu sync.RWMutex
-	sessions   = map[string]sessionEntry{}
-
-	cfgPassword string
-	rtkEnabled  = true
-	rtkMu       sync.RWMutex
+	accounts      []*accountState
+	configMu      sync.Mutex
+	activeBatch   [3]*accountState
+	standbyQueue  []*accountState
+	currentSlot   int
+	stickyCount   int
+	rotationMu    sync.Mutex
+	bootReady     = make(chan struct{})
+	sessionsMu    sync.RWMutex
+	sessions      = map[string]sessionEntry{}
+	cfgPassword   string
+	rtkEnabled    = true
+	rtkMu         sync.RWMutex
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -111,6 +111,12 @@ func (a *accountState) getCreds() (kiro.Credentials, error) {
 			time.Sleep(time.Duration(i+1) * time.Second)
 		}
 		if err != nil {
+			a.failedRefresh++
+			if a.failedRefresh >= 3 {
+				a.exhausted = true
+				a.remaining = 0
+				a.cfg.Exhausted = true
+			}
 			return kiro.Credentials{}, err
 		}
 		a.failedRefresh = 0
@@ -290,37 +296,32 @@ func fillActiveBatch() {
 	stickyCount = 0
 }
 
-func refillSlot(slot int) {
+func pickAccount() *accountState {
 	rotationMu.Lock()
 	defer rotationMu.Unlock()
 
-	if len(standbyQueue) == 0 {
-		activeBatch[slot] = nil
-		saveConfig()
-		return
-	}
-
-	activeBatch[slot] = standbyQueue[0]
-	standbyQueue = standbyQueue[1:]
-	saveConfig()
-}
-
-func pickAccount(exclude map[*accountState]bool) *accountState {
-	rotationMu.Lock()
-	defer rotationMu.Unlock()
-
-	// Try current slot
-	maxAttempts := 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		acc := activeBatch[currentSlot]
-		if acc != nil && !exclude[acc] && acc.available() {
+	// Try current slot with stickiness
+	acc := activeBatch[currentSlot]
+	if acc != nil && acc.available() {
+		if stickyCount < stickyTarget {
+			stickyCount++
 			return acc
 		}
-		// Move to next slot
+		// sticky target reached → rotate
+		currentSlot = (currentSlot + 1) % 3
+		stickyCount = 0
+	}
+
+	// Scan remaining slots for available account
+	for attempt := 0; attempt < 3; attempt++ {
+		acc = activeBatch[currentSlot]
+		if acc != nil && acc.available() {
+			stickyCount = 1
+			return acc
+		}
 		currentSlot = (currentSlot + 1) % 3
 	}
 
-	// All slots exhausted/excluded
 	return nil
 }
 
@@ -453,7 +454,6 @@ func loadConfig() {
 			creds, err := a.getCreds()
 			if err != nil {
 				log.Printf("[%d/%d] %s: refresh failed — %v", i+1, total, a.cfg.Label, err)
-				a.markExhausted()
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -752,21 +752,23 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	tried := make(map[*accountState]bool)
+	exhaustRetries := 0
+	credsErrCount := 0
 	resetDone := false
 	for {
-		acc := pickAccount(tried)
+		acc := pickAccount()
 		if acc == nil {
 			if !resetDone {
 				resetDone = true
-				log.Println("all accounts exhausted, resetting and retrying once")
+				log.Println("all accounts in pool exhausted, resetting and retrying once")
 				for _, a := range accounts {
 					if !a.suspended {
 						a.reset()
 					}
 				}
 				fillActiveBatch()
-				tried = make(map[*accountState]bool)
+				exhaustRetries = 0
+				credsErrCount = 0
 				continue
 			}
 			writeJSONError(w, "all accounts exhausted", "service_unavailable", http.StatusServiceUnavailable)
@@ -775,10 +777,21 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		creds, err := acc.getCreds()
 		if err != nil {
-			tried[acc] = true
+			credsErrCount++
+			if credsErrCount >= 3 {
+				log.Printf("creds errors on all accounts, giving up")
+				writeJSONError(w, "credentials error on all accounts", "auth_error", http.StatusInternalServerError)
+				return
+			}
 			log.Printf("creds error [%s]: %v", acc.cfg.Label, err)
+			// Rotate slot so next pickAccount skips this account
+			rotationMu.Lock()
+			currentSlot = (currentSlot + 1) % 3
+			rotationMu.Unlock()
 			continue
 		}
+		credsErrCount = 0
+		
 
 		acc.consume()
 		if os.Getenv("KIRO_INTEGRITY_CHECK") == "true" {
@@ -791,17 +804,42 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if errors.Is(err, kiro.ErrExhausted) {
-			log.Printf("account exhausted [%s], retrying next", acc.cfg.Label)
+			log.Printf("account exhausted [%s]", acc.cfg.Label)
 			acc.markExhausted()
-			tried[acc] = true
+			// Refill this slot from standby, reset sticky count for replacement
+			rotationMu.Lock()
+			replaced := false
+			for i := 0; i < 3; i++ {
+				if activeBatch[i] == acc {
+					if len(standbyQueue) > 0 {
+						activeBatch[i] = standbyQueue[0]
+						standbyQueue = standbyQueue[1:]
+						replaced = true
+					} else {
+						activeBatch[i] = nil
+					}
+					stickyCount = 0
+					break
+				}
+			}
+			rotationMu.Unlock()
 			go saveConfig()
+			if replaced {
+				exhaustRetries = 0 // reset — we got a fresh account from standby
+			} else {
+				exhaustRetries++
+				if exhaustRetries >= 3 {
+					log.Println("exhausted 3 accounts and no standby left, giving up")
+					writeJSONError(w, "all accounts exhausted", "exhausted", http.StatusPaymentRequired)
+					return
+				}
+			}
 			continue
 		}
 
 		if errors.Is(err, kiro.ErrSuspended) {
 			log.Printf("account suspended [%s], skipping permanently", acc.cfg.Label)
 			acc.markSuspended()
-			tried[acc] = true
 			go saveConfig()
 			continue
 		}
