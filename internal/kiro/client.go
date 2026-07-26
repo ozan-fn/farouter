@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -121,6 +122,18 @@ func sendToKiro(creds Credentials, body []byte) (*http.Response, error) {
 	return sendToKiroCtx(context.Background(), creds, body)
 }
 
+// regionalizeURL replaces the region in an amazonaws.com URL
+// e.g., "https://codewhisperer.us-east-1.amazonaws.com" + "eu-central-1"
+//    → "https://codewhisperer.eu-central-1.amazonaws.com"
+func regionalizeURL(url, region string) string {
+	if region == "" || region == "us-east-1" || !strings.Contains(url, "amazonaws.com") {
+		return url
+	}
+	// Pattern: {service}.{region}.amazonaws.com → {service}.{newRegion}.amazonaws.com
+	re := regexp.MustCompile(`([a-z]+)\.[a-z0-9-]+\.amazonaws\.com`)
+	return re.ReplaceAllString(url, fmt.Sprintf("$1.%s.amazonaws.com", region))
+}
+
 // sendToKiroCtx sends the given body to the Kiro generateAssistantResponse
 // endpoint with endpoint failover. It tries amazonaws.com endpoints first
 // for CodeWhisperer-surface auth methods, then falls back to kiro.dev.
@@ -133,10 +146,18 @@ func sendToKiroCtx(ctx context.Context, creds Credentials, body []byte) (*http.R
 		creds.PSD.AuthMethod == "idc"
 
 	if isCodeWhispererSurface {
+		// Regionalize URLs based on token region (match VansRouter behavior)
+		region := strings.TrimSpace(creds.PSD.Region)
+		if region == "" {
+			region = "us-east-1"
+		}
+		
 		var amazon, others []string
 		for _, u := range urls {
 			if strings.Contains(u, "amazonaws.com") {
-				amazon = append(amazon, u)
+				// Regionalize amazonaws.com URLs if not us-east-1
+				regionalized := regionalizeURL(u, region)
+				amazon = append(amazon, regionalized)
 			} else {
 				others = append(others, u)
 			}
