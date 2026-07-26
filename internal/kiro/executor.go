@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"farouter/internal/rtk"
 )
 
 const (
@@ -17,7 +19,7 @@ const (
 	intraRetryDelayMs = 2000
 )
 
-func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID string) error {
+func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID string, rtkEnabled bool) error {
 	resolved := ResolveModel(req.Model)
 
 	authMethod := creds.PSD.AuthMethod
@@ -45,6 +47,10 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 	kiroBody, err := buildKiroRequest(req, resolved, profileArn, conversationID)
 	if err != nil {
 		return err
+	}
+
+	if rtkEnabled {
+		kiroBody = rtk.ProcessKiroBody(kiroBody)
 	}
 
 	filteredBody := transformRequestPayload(kiroBody)
@@ -162,7 +168,7 @@ func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseW
 
 // ExecuteWithIntegrityCheck runs Execute with the 9router integrity gate:
 // buffer full SSE, validate content, retry with repair instruction on ellipsis/short_final/invalid_tool.
-func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID string) error {
+func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID string, rtkEnabled bool) error {
 	resolved := ResolveModel(req.Model)
 
 	authMethod := creds.PSD.AuthMethod
@@ -190,6 +196,10 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	kiroBody, err := buildKiroRequest(req, resolved, profileArn, conversationID)
 	if err != nil {
 		return err
+	}
+
+	if rtkEnabled {
+		kiroBody = rtk.ProcessKiroBody(kiroBody)
 	}
 
 	filteredBody := transformRequestPayload(kiroBody)

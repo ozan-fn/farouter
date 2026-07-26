@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"farouter/internal/kiro"
-	"farouter/internal/rtk"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -693,20 +692,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── RTK: Process tool output in messages context ──
-	rtkMu.RLock()
-	rtkOn := rtkEnabled
-	rtkMu.RUnlock()
-	if rtkOn {
-		before := len(req.Messages)
-		messagesData := messagesToMapSlice(req.Messages)
-		messagesData = rtk.ProcessToolMessages(messagesData)
-		req.Messages = mapSliceToMessages(messagesData)
-		log.Printf("[rtk] processed %d messages (model=%s)", before, req.Model)
-	} else {
-		log.Printf("[rtk] skipped (disabled, model=%s)", req.Model)
-	}
-
 	conversationID := r.Header.Get("X-Session-Id")
 	if conversationID == "" {
 		conversationID = r.Header.Get("X-Conversation-Id")
@@ -787,9 +772,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		acc.consume()
 		if os.Getenv("KIRO_INTEGRITY_CHECK") == "true" {
-			err = kiro.ExecuteWithIntegrityCheck(ctx, creds, req, w, conversationID)
+			err = kiro.ExecuteWithIntegrityCheck(ctx, creds, req, w, conversationID, rtkEnabled)
 		} else {
-			err = kiro.Execute(ctx, creds, req, w, conversationID)
+			err = kiro.Execute(ctx, creds, req, w, conversationID, rtkEnabled)
 		}
 		if err == nil {
 			return
@@ -1041,36 +1026,4 @@ func acceptsBrotli(r *http.Request) bool {
 	return false
 }
 
-// ── RTK helper functions ────────────────────────────────────────────────────
 
-func messagesToMapSlice(messages []kiro.Message) []map[string]any {
-	result := make([]map[string]any, len(messages))
-	for i, msg := range messages {
-		result[i] = map[string]any{
-			"role":         msg.Role,
-			"content":      msg.Content,
-			"tool_call_id": msg.ToolCallID,
-			"tool_calls":   msg.ToolCalls,
-		}
-	}
-	return result
-}
-
-func mapSliceToMessages(data []map[string]any) []kiro.Message {
-	result := make([]kiro.Message, len(data))
-	for i, m := range data {
-		msg := kiro.Message{}
-		if role, ok := m["role"].(string); ok {
-			msg.Role = role
-		}
-		msg.Content = m["content"]
-		if tcid, ok := m["tool_call_id"].(string); ok {
-			msg.ToolCallID = tcid
-		}
-		if tcs, ok := m["tool_calls"].([]kiro.ToolCall); ok {
-			msg.ToolCalls = tcs
-		}
-		result[i] = msg
-	}
-	return result
-}
