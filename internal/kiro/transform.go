@@ -16,7 +16,7 @@ const (
 	namespaceKiro     = "34f7193f-561d-4050-bc84-9547d953d6bf"
 )
 
-func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string, conversationID string) ([]byte, error) {
+func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conversationID, connectionID string) ([]byte, error) {
 	upstreamModel := resolved.Upstream
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 
@@ -58,16 +58,19 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 	systemPrompt := strings.Join(systemPromptParts, "\n\n")
 
 	currentTimeContext := "[Context: Current time is " + timestamp + "]"
-	var contentPrefixParts []string
+	// Dual prefix: contentPrefix (frozen per session for cacheability) = systemPrompt only
+	// currentContentPrefix (volatile per turn) = systemPrompt + currentTimeContext
+	contentPrefix := systemPrompt
+	var curPrefixParts []string
 	if systemPrompt != "" {
-		contentPrefixParts = append(contentPrefixParts, systemPrompt)
+		curPrefixParts = append(curPrefixParts, systemPrompt)
 	}
-	contentPrefixParts = append(contentPrefixParts, currentTimeContext)
-	contentPrefix := strings.Join(contentPrefixParts, "\n\n")
+	curPrefixParts = append(curPrefixParts, currentTimeContext)
+	currentContentPrefix := strings.Join(curPrefixParts, "\n\n")
 
-	history, currentMsg = applySessionReplay(
-		conversationID, upstreamModel, systemPrompt,
-		contentPrefix, currentTimeContext,
+	history, currentMsg, _ = applySessionReplay(
+		connectionID, conversationID, upstreamModel, systemPrompt,
+		contentPrefix, currentContentPrefix,
 		history, currentMsg,
 	)
 
@@ -102,7 +105,7 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 		"conversationState": map[string]any{
 			"chatTriggerType":     "MANUAL",
 			"conversationId":      conversationID,
-			"agentContinuationId": uuid.New().String(),
+			"agentContinuationId": GetOrCreateContinuationID(conversationID, func() string { return uuid.New().String() }),
 			"agentTaskType":       "vibe",
 			"currentMessage": map[string]any{
 				"userInputMessage": map[string]any{

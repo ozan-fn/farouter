@@ -696,6 +696,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if conversationID == "" {
 		conversationID = r.Header.Get("X-Conversation-Id")
 	}
+	connectionID := r.Header.Get("X-Connection-Id")
 
 	// Client disconnect detection (streamHandler.js createDisconnectAwareStream)
 	ctx, cancel := context.WithCancel(r.Context())
@@ -772,9 +773,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		acc.consume()
 		if os.Getenv("KIRO_INTEGRITY_CHECK") == "true" {
-			err = kiro.ExecuteWithIntegrityCheck(ctx, creds, req, w, conversationID, rtkEnabled)
+			err = kiro.ExecuteWithIntegrityCheck(ctx, creds, req, w, conversationID, connectionID, rtkEnabled)
 		} else {
-			err = kiro.Execute(ctx, creds, req, w, conversationID, rtkEnabled)
+			err = kiro.Execute(ctx, creds, req, w, conversationID, connectionID, rtkEnabled)
 		}
 		if err == nil {
 			return

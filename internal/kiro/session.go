@@ -44,43 +44,11 @@ func GetOrCreateContinuationID(conversationID string, newID func() string) strin
 	return entry.continuationID
 }
 
-func applySessionReplay(conversationID, modelID, systemPrompt, contentPrefix, currentTimeContext string, history []map[string]any, currentMessage map[string]any) ([]map[string]any, map[string]any) {
-	// Unified approach: ALWAYS prefix currentMessage with full contentPrefix
-	// NO sessionStart injection, NO history manipulation
-	// Result: Request 1 = Request 2 = Request 3 = ... (consistent structure)
-	
-	prefixUserMessage(currentMessage, contentPrefix, modelID)
-	
-	// Optional: Still track sessions for analytics/logging purposes
-	// but don't use it to modify request structure
-	if conversationID != "" {
-		sessionMu.Lock()
-		sessionStore[conversationID] = sessionEntry{
-			modelID:      modelID,
-			systemPrompt: systemPrompt,
-			sessionStart: cloneMap(currentMessage), // Track for logging only
-			lastUsed:     time.Now(),
-		}
-		// Cleanup old sessions
-		if len(sessionStore) >= 5000 {
-			oldest := ""
-			var oldestTime time.Time
-			for k, v := range sessionStore {
-				if oldest == "" || v.lastUsed.Before(oldestTime) {
-					oldest = k
-					oldestTime = v.lastUsed
-				}
-			}
-			if oldest != "" {
-				delete(sessionStore, oldest)
-			}
-		}
-		sessionMu.Unlock()
-	}
-	
-	return history, currentMessage
+func sessionKey(connectionID, conversationID string) string {
+	return connectionID + ":" + conversationID
 }
 
+// ── helpers ───────────────────────────────────────────────────────────
 
 func findFirstUserIndex(history []map[string]any) int {
 	for i, h := range history {
@@ -118,13 +86,39 @@ func ensureModelID(msg map[string]any, modelID string) {
 	}
 }
 
-func ensureHistoryModelIDs(history []map[string]any, modelID string) {
+func ensureHistoryModelIDs(history []map[string]any, modelID string) []map[string]any {
 	for _, h := range history {
 		ensureModelID(h, modelID)
 	}
+	return history
+}
+
+func ensureUserMessageModelID(msg map[string]any, modelID string) map[string]any {
+	if msg == nil {
+		return msg
+	}
+	uim, ok := msg["userInputMessage"].(map[string]any)
+	if ok && uim != nil {
+		if _, has := uim["modelId"]; !has {
+			uim["modelId"] = modelID
+		}
+	}
+	return msg
+}
+
+func prefixUserMessageCopy(msg map[string]any, prefix, modelID string) map[string]any {
+	out := cloneMap(msg)
+	if out == nil {
+		out = map[string]any{"userInputMessage": map[string]any{"content": ""}}
+	}
+	prefixUserMessage(out, prefix, modelID)
+	return out
 }
 
 func cloneMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
 	b, _ := json.Marshal(m)
 	var out map[string]any
 	json.Unmarshal(b, &out)
@@ -132,11 +126,90 @@ func cloneMap(m map[string]any) map[string]any {
 }
 
 func cloneMaps(ms []map[string]any) []map[string]any {
+	if ms == nil {
+		return nil
+	}
 	b, _ := json.Marshal(ms)
 	var out []map[string]any
 	json.Unmarshal(b, &out)
 	return out
 }
+
+// ── Session replay (port of VansRouter kiroSessionReplay.js) ──────────
+
+// applySessionReplay preserves Kiro cacheability by freezing the first user
+// message (sessionStart) for a session, replaying that exact message as the
+// first history user on later turns, and injecting volatile current-time
+// context only into the current turn.
+func applySessionReplay(connectionID, conversationID, modelID, systemPrompt, contentPrefix, currentContentPrefix string, history []map[string]any, currentMessage map[string]any) ([]map[string]any, map[string]any, bool) {
+	key := sessionKey(connectionID, conversationID)
+	sessionMu.Lock()
+	existing := sessionStore[key]
+	sessionMu.Unlock()
+
+	baseHistory := cloneMaps(history)
+	baseCurrent := cloneMap(currentMessage)
+	if baseCurrent == nil {
+		baseCurrent = map[string]any{"userInputMessage": map[string]any{"content": ""}}
+	}
+
+	if existing.sessionStart != nil && existing.modelID == modelID && existing.systemPrompt == systemPrompt {
+		// Later turn: replay frozen sessionStart as first history entry
+		sessionMu.Lock()
+		existing.lastUsed = time.Now()
+		sessionStore[key] = existing
+		sessionMu.Unlock()
+
+		sessionStart := ensureUserMessageModelID(cloneMap(existing.sessionStart), modelID)
+		firstUserIndex := findFirstUserIndex(baseHistory)
+		if firstUserIndex >= 0 {
+			baseHistory[firstUserIndex] = sessionStart
+		} else {
+			baseHistory = append([]map[string]any{sessionStart}, baseHistory...)
+		}
+		return ensureHistoryModelIDs(baseHistory, modelID), prefixUserMessageCopy(baseCurrent, currentContentPrefix, modelID), true
+	}
+
+	// First turn: save sessionStart (with contentPrefix), currentMessage gets currentContentPrefix
+	firstUserIndex := findFirstUserIndex(baseHistory)
+	var sessionStart map[string]any
+	if firstUserIndex >= 0 {
+		sessionStart = prefixUserMessageCopy(baseHistory[firstUserIndex], contentPrefix, modelID)
+		baseHistory[firstUserIndex] = cloneMap(sessionStart)
+	} else {
+		sessionStart = prefixUserMessageCopy(baseCurrent, contentPrefix, modelID)
+	}
+	nextCurrent := prefixUserMessageCopy(baseCurrent, currentContentPrefix, modelID)
+
+	if conversationID != "" {
+		sessionMu.Lock()
+		sessionStore[key] = sessionEntry{
+			sessionStart: cloneMap(sessionStart),
+			modelID:      modelID,
+			systemPrompt: systemPrompt,
+			lastUsed:     time.Now(),
+		}
+		// Evict oldest if >5000
+		if len(sessionStore) >= 5000 {
+			oldest := ""
+			var oldestTime time.Time
+			for k, v := range sessionStore {
+				if oldest == "" || v.lastUsed.Before(oldestTime) {
+					oldest = k
+					oldestTime = v.lastUsed
+				}
+			}
+			if oldest != "" {
+				delete(sessionStore, oldest)
+			}
+		}
+		sessionMu.Unlock()
+	}
+
+	return ensureHistoryModelIDs(baseHistory, modelID), nextCurrent, false
+}
+
+// ── Orphaned tool results reconciliation ──────────────────────────────
 
 func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[string]any) {
 	validIDs := map[string]bool{}
