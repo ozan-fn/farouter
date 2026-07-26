@@ -35,4 +35,4 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - run: lftp -c "open -u ${{ secrets.FTP_USER }},${{ secrets.FTP_PASS }} ${{ secrets.FTP_HOST }}; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
+      - run: lftp -c "open -u ${{ secrets.FTP_USER }},${{ secrets.FTP_PASS }} ${{ secrets.FTP_HOST }}; rm -f /go/farouter; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
