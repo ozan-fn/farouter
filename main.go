@@ -215,11 +215,41 @@ func (a *accountState) refreshTokenIfNeeded() {
 
 func startTokenRefreshLoop() {
 	go func() {
-		for range time.Tick(24 * time.Hour) {
+		for range time.Tick(1 * time.Minute) {
 			for _, a := range accounts {
 				a.refreshTokenIfNeeded()
 			}
 			saveConfig()
+		}
+	}()
+}
+
+func startResetWatcher() {
+	go func() {
+		<-bootReady
+		for range time.Tick(1 * time.Minute) {
+			now := time.Now()
+			reactivated := 0
+			for _, a := range accounts {
+				a.mu.Lock()
+				if a.exhausted && a.cfg.ResetAt != "" {
+					resetTime := parseResetAt(a.cfg.ResetAt)
+					if !resetTime.IsZero() && now.After(resetTime) {
+						a.exhausted = false
+						a.remaining = tokenLimit
+						a.cfg.Exhausted = false
+						a.cfg.ResetAt = ""
+						reactivated++
+						log.Printf("reset watcher: reactivated [%s]", a.cfg.Label)
+					}
+				}
+				a.mu.Unlock()
+			}
+			if reactivated > 0 {
+				fillActiveBatch()
+				saveConfig()
+				log.Printf("reset watcher: reactivated %d accounts, pool refilled", reactivated)
+			}
 		}
 	}()
 }
@@ -401,11 +431,20 @@ func loadConfig() {
 		for i, a := range accounts {
 			a.mu.Lock()
 			alreadyExhausted := a.exhausted
+			lastRefreshed := a.cfg.LastRefreshedAt
 			a.mu.Unlock()
 			if alreadyExhausted {
 				log.Printf("[%d/%d] %s: skipped (exhausted)", i+1, total, a.cfg.Label)
 				time.Sleep(1 * time.Second)
 				continue
+			}
+			if lastRefreshed != "" {
+				t, err := time.Parse(time.RFC3339, lastRefreshed)
+				if err == nil && time.Since(t) < 6*24*time.Hour {
+					log.Printf("[%d/%d] %s: skipped (recent refresh)", i+1, total, a.cfg.Label)
+					time.Sleep(1 * time.Second)
+					continue
+				}
 			}
 			creds, err := a.getCreds()
 			if err != nil {
@@ -483,6 +522,7 @@ func loadConfig() {
 func main() {
 	go loadConfig()
 	startTokenRefreshLoop()
+	startResetWatcher()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
