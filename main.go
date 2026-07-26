@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,16 +27,6 @@ import (
 
 //go:embed web/dist
 var distFS embed.FS
-
-var distSubFS fs.FS
-
-func init() {
-	var err error
-	distSubFS, err = fs.Sub(distFS, "web/dist")
-	if err != nil {
-		log.Fatalf("embed sub: %v", err)
-	}
-}
 
 const (
 	kiroAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
@@ -479,14 +470,15 @@ func main() {
 		r.Post("/v1/chat/completions", handleChatCompletions)
 	})
 
-	r.Handle("/*", staticFileServer(http.FS(distSubFS)))
+	serveSPA(r, distFS, "web/dist")
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "20180"
 	}
-	log.Println("listening on :" + port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	addr := "localhost:" + port
+	log.Println("listening on http://" + addr)
+	log.Fatal(http.ListenAndServe(addr, r))
 }
 
 func authMiddleware(next http.Handler) http.Handler {
@@ -798,36 +790,85 @@ func mustMarshal(v any) []byte {
 	return b
 }
 
-func staticFileServer(fsys http.FileSystem) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/")
-		if name == "" {
-			name = "index.html"
+func serveSPA(r chi.Router, embeddedFS embed.FS, targetDir string) {
+	contentFS, err := fs.Sub(embeddedFS, targetDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fileServer := http.FileServer(http.FS(contentFS))
+
+	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+		filePath := path.Clean(r.URL.Path)
+		filePath = strings.TrimPrefix(filePath, "/")
+
+		if filePath == "" {
+			if acceptsBrotli(r) {
+				if f, err := contentFS.Open("index.html.br"); err == nil {
+					f.Close()
+					w.Header().Set("Content-Encoding", "br")
+					w.Header().Set("Content-Type", "text/html")
+					http.ServeFileFS(w, r, contentFS, "index.html.br")
+					return
+				}
+			}
+			fileServer.ServeHTTP(w, r)
+			return
 		}
 
+		// Try brotli for existing files
 		if acceptsBrotli(r) {
-			f, err := fsys.Open(name + ".br")
-			if err == nil {
-				defer f.Close()
-				stat, _ := f.Stat()
+			if f, err := contentFS.Open(filePath + ".br"); err == nil {
+				f.Close()
 				w.Header().Set("Content-Encoding", "br")
-				http.ServeContent(w, r, name, stat.ModTime(), f)
+				w.Header().Set("Content-Type", mimeTypeByExt(filePath))
+				http.ServeFileFS(w, r, contentFS, filePath+".br")
 				return
 			}
 		}
 
-		f, err := fsys.Open(name)
-		if err != nil {
-			f, err = fsys.Open("index.html")
-			if err != nil {
-				http.NotFound(w, r)
+		f, err := contentFS.Open(filePath)
+		if err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// SPA fallback — serve index.html
+		if acceptsBrotli(r) {
+			if f, err := contentFS.Open("index.html.br"); err == nil {
+				f.Close()
+				w.Header().Set("Content-Encoding", "br")
+				w.Header().Set("Content-Type", "text/html")
+				http.ServeFileFS(w, r, contentFS, "index.html.br")
 				return
 			}
 		}
-		defer f.Close()
-		stat, _ := f.Stat()
-		http.ServeContent(w, r, name, stat.ModTime(), f)
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeFileFS(w, r, contentFS, "index.html")
 	})
+}
+
+func mimeTypeByExt(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".html"):
+		return "text/html"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css"
+	case strings.HasSuffix(name, ".js"):
+		return "application/javascript"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
+	case strings.HasSuffix(name, ".ico"):
+		return "image/x-icon"
+	default:
+		return ""
+	}
 }
 
 func acceptsBrotli(r *http.Request) bool {
