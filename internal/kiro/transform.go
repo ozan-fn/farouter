@@ -100,8 +100,10 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 
 	payload := map[string]any{
 		"conversationState": map[string]any{
-			"chatTriggerType": "MANUAL",
-			"conversationId":  conversationID,
+			"chatTriggerType":     "MANUAL",
+			"conversationId":      conversationID,
+			"agentContinuationId": uuid.New().String(),
+			"agentTaskType":       "vibe",
 			"currentMessage": map[string]any{
 				"userInputMessage": map[string]any{
 					"content": finalContent,
@@ -111,6 +113,7 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn string
 			},
 			"history": history,
 		},
+		"agentMode": "vibe",
 	}
 
 	if systemPrompt != "" {

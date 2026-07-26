@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
+
+var wsHyphenRe = regexp.MustCompile(`[\s-]+`)
 
 func normalizeStopReason(payload map[string]any) string {
 	if payload == nil {
@@ -26,15 +29,20 @@ func normalizeStopReasonString(value string) string {
 	if value == "" {
 		return ""
 	}
+	// Insert underscore between lowercase→uppercase transitions only (like VansRouter)
 	result := ""
 	for i, r := range value {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result += "_"
+		if i > 0 {
+			prev := rune(value[i-1])
+			if prev >= 'a' && prev <= 'z' && r >= 'A' && r <= 'Z' {
+				result += "_"
+			}
 		}
 		result += string(r)
 	}
 	result = strings.ToLower(result)
-	result = strings.NewReplacer(" ", "_", "-", "_", "\t", "_").Replace(result)
+	// Collapse consecutive whitespace/hyphens into single underscore (like VansRouter)
+	result = wsHyphenRe.ReplaceAllString(result, "_")
 	switch result {
 	case "endturn", "end_turn", "stop", "stop_sequence":
 		return "end_turn"

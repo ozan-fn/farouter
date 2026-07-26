@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -110,42 +109,6 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 }
 
 func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseWriter, resolved ResolvedModel) error {
-	// Content-type validation (streamingHandler.js:62-80)
-	ct := resp.Header.Get("Content-Type")
-	if !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "application/json") {
-		bodyText, _ := io.ReadAll(resp.Body)
-		titleRe := regexp.MustCompile(`<title>([^<]+)</title>`)
-		match := titleRe.FindStringSubmatch(string(bodyText))
-		shortMsg := ""
-		if len(match) > 1 {
-			shortMsg = strings.TrimSpace(match[1])
-			shortMsg = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(shortMsg, "")
-			shortMsg = regexp.MustCompile(`[\r\n]+`).ReplaceAllString(shortMsg, " ")
-			if len(shortMsg) > 160 {
-				shortMsg = shortMsg[:160]
-			}
-		}
-		if shortMsg == "" {
-			if len(bodyText) < 200 {
-				shortMsg = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(string(bodyText), "")
-				shortMsg = strings.TrimSpace(shortMsg)
-				if len(shortMsg) > 160 {
-					shortMsg = shortMsg[:160]
-				}
-			} else {
-				shortMsg = fmt.Sprintf("Upstream returned non-SSE response (%s)", ct)
-			}
-		}
-		if shortMsg == "" {
-			shortMsg = fmt.Sprintf("non-SSE response status=%d", resp.StatusCode)
-		}
-		status := resp.StatusCode
-		if status == 0 {
-			status = 502
-		}
-		return fmt.Errorf("[%d]: %s", status, shortMsg)
-	}
-
 	// Pipeline: Kiro EventStream → SSE → passthrough transform → client
 	sc := NewStreamController(ctx)
 
@@ -448,6 +411,8 @@ func transformRequestPayload(body []byte) []byte {
 		"profileArn":                   true,
 		"inferenceConfig":              true,
 		"additionalModelRequestFields": true,
+		"systemPrompt":                 true,
+		"agentMode":                    true,
 	}
 
 	filtered := make(map[string]any, len(allowed))

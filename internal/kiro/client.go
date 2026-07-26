@@ -61,8 +61,6 @@ func BuildKiroHeaders(creds Credentials) map[string]string {
 	headers := GetKiroServiceHeaders()
 	headers["Amz-Sdk-Request"] = "attempt=1; max=3"
 	headers["Amz-Sdk-Invocation-Id"] = uuid.New().String()
-	headers["x-amzn-bedrock-cache-control"] = "enable"
-	headers["anthropic-beta"] = "prompt-caching-2024-07-31"
 
 	token := creds.AccessToken
 	if creds.PSD.AuthMethod == "api_key" {
