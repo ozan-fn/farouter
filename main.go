@@ -87,6 +87,7 @@ var (
 
 	cfgPassword string
 	rtkEnabled  = true
+	rtkMu       sync.RWMutex
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -326,9 +327,12 @@ func pickAccount(exclude map[*accountState]bool) *accountState {
 func saveConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
+	rtkMu.RLock()
+	rtkVal := rtkEnabled
+	rtkMu.RUnlock()
 	cfg := Config{
 		Password:   cfgPassword,
-		RTKEnabled: rtkEnabled,
+		RTKEnabled: rtkVal,
 	}
 	rotationMu.Lock()
 	cfg.CurrentSlot = currentSlot
@@ -535,6 +539,8 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware)
 		r.Get("/status", handleStatus)
+		r.Get("/api/rtk", handleRTK)
+		r.Post("/api/rtk", handleRTK)
 		r.Post("/accounts/reset", handleReset)
 		r.Post("/auth/kiro/refresh", handleKiroRefresh)
 	})
@@ -638,6 +644,46 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
+func handleRTK(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rtkMu.RLock()
+		enabled := rtkEnabled
+		rtkMu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"rtkEnabled": enabled})
+
+	case http.MethodPost:
+		var body struct {
+			RTKEnabled *bool `json:"rtkEnabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		if body.RTKEnabled == nil {
+			// Toggle if no explicit value
+			rtkMu.Lock()
+			rtkEnabled = !rtkEnabled
+			newVal := rtkEnabled
+			rtkMu.Unlock()
+			go saveConfig()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"rtkEnabled": newVal})
+		} else {
+			rtkMu.Lock()
+			rtkEnabled = *body.RTKEnabled
+			rtkMu.Unlock()
+			go saveConfig()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"rtkEnabled": *body.RTKEnabled})
+		}
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	<-bootReady
 
@@ -656,12 +702,17 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── RTK: Process tool output in messages context ──
-	if rtkEnabled {
+	rtkMu.RLock()
+	rtkOn := rtkEnabled
+	rtkMu.RUnlock()
+	if rtkOn {
 		before := len(req.Messages)
 		messagesData := messagesToMapSlice(req.Messages)
 		messagesData = rtk.ProcessToolMessages(messagesData)
 		req.Messages = mapSliceToMessages(messagesData)
 		log.Printf("[rtk] processed %d messages (model=%s)", before, req.Model)
+	} else {
+		log.Printf("[rtk] skipped (disabled, model=%s)", req.Model)
 	}
 
 	conversationID := r.Header.Get("X-Session-Id")
