@@ -538,7 +538,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		acc.consume()
-		err = kiro.Execute(ctx, creds, req, w, conversationID)
+		if os.Getenv("KIRO_INTEGRITY_CHECK") == "true" {
+			err = kiro.ExecuteWithIntegrityCheck(ctx, creds, req, w, conversationID)
+		} else {
+			err = kiro.Execute(ctx, creds, req, w, conversationID)
+		}
 		if err == nil {
 			return
 		}

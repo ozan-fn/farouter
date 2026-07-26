@@ -15,6 +15,19 @@ type kiroThinkingState struct {
 
 const partialTagMaxLen = 11
 
+var kiroEventTypes = map[string]bool{
+	"assistantResponseEvent":  true,
+	"reasoningContentEvent":   true,
+	"codeEvent":               true,
+	"toolUseEvent":            true,
+	"messageStopEvent":        true,
+	"metadataEvent":           true,
+	"MetadataEvent":           true,
+	"contextUsageEvent":       true,
+	"meteringEvent":           true,
+	"metricsEvent":            true,
+}
+
 type kiroSSEState struct {
 	chunkIndex        int
 	startEmitted      bool
@@ -33,6 +46,11 @@ type kiroSSEState struct {
 	totalContentLength int
 	contextUsagePct   float64
 	hasContextUsage   bool
+
+	eventCounts          map[string]int
+	transportState       string
+	terminalProvenance   string
+	bufferedToolBytes    int
 }
 
 type kiroToolBuffer struct {
@@ -41,19 +59,31 @@ type kiroToolBuffer struct {
 }
 
 type kiroToolArgBuffer struct {
-	toolIndex   int
-	canonical   string
-	stringParts []string
+	toolIndex    int
+	canonical    string
+	stringParts  []string
 	isObjectForm bool
 }
 
-func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
+type TransformOptions struct {
+	OnTerminalState func(*IntegrityDiagnostics)
+	MaxToolBytes    int
+}
+
+func transformKiroToSSE(r io.Reader, model string, w io.Writer, opts *TransformOptions) error {
+	maxToolBytes := KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES / 2
+	if opts != nil && opts.MaxToolBytes > 0 {
+		maxToolBytes = opts.MaxToolBytes
+	}
+
 	state := &kiroSSEState{
 		tools:          make(map[string]*kiroToolBuffer),
 		toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
 		responseID:     fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli()),
 		created:        time.Now().Unix(),
 		model:          model,
+		eventCounts:    make(map[string]int),
+		transportState: "consuming_response",
 	}
 
 	emitDelta := func(delta map[string]any) {
@@ -111,6 +141,15 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 		}
 	}
 
+	callTerminal := func(provenance string) {
+		if opts == nil || opts.OnTerminalState == nil {
+			return
+		}
+		d := buildDiagnostics(state)
+		d.TerminalProvenance = provenance
+		opts.OnTerminalState(d)
+	}
+
 	err := ParseEventStream(r, func(event Event) error {
 		msgType := event.Headers[":message-type"]
 		if msgType == "error" || msgType == "exception" {
@@ -120,6 +159,8 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 					msg = m
 				}
 			}
+			state.transportState = "upstream_error"
+			callTerminal("upstream_eventstream_error")
 			return fmt.Errorf("kiro upstream eventstream error: %s", msg)
 		}
 
@@ -128,6 +169,11 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 		}
 
 		eventType := event.Headers[":event-type"]
+		if kiroEventTypes[eventType] {
+			state.eventCounts[eventType]++
+		} else {
+			state.eventCounts["other"]++
+		}
 
 		switch eventType {
 		case "assistantResponseEvent":
@@ -146,11 +192,13 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 			}
 
 		case "toolUseEvent":
-			handleKiroToolUseEvent(event.Payload, state)
+			if err := handleKiroToolUseEvent(event.Payload, state, maxToolBytes); err != nil {
+				return err
+			}
 
 		case "messageStopEvent":
 			state.explicitStop = true
-			reason := normalizeKiroStopReason(event.Payload)
+			reason := normalizeStopReason(event.Payload)
 			if reason == "" {
 				if len(state.tools) > 0 {
 					reason = "tool_use"
@@ -158,7 +206,11 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 					reason = "end_turn"
 				}
 			}
-			state.stopReason = mergeKiroStopReason(state.stopReason, reason)
+			merged := mergeStopReason(state.stopReason, reason)
+			if merged != state.stopReason {
+				state.terminalProvenance = "message_stop_event"
+			}
+			state.stopReason = merged
 
 		case "metadataEvent", "MetadataEvent":
 			meta := event.Payload
@@ -167,10 +219,14 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 			} else if m, ok := event.Payload["metadata"].(map[string]any); ok {
 				meta = m
 			}
-			reason := normalizeKiroStopReason(meta)
+			reason := normalizeStopReason(meta)
 			if reason != "" {
 				state.explicitStop = true
-				state.stopReason = mergeKiroStopReason(state.stopReason, reason)
+				merged := mergeStopReason(state.stopReason, reason)
+				if merged != state.stopReason {
+					state.terminalProvenance = "metadata_stop_reason"
+				}
+				state.stopReason = merged
 			}
 
 		case "metricsEvent":
@@ -182,6 +238,7 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 		case "contextUsageEvent":
 			handleKiroContextUsageEvent(event.Payload, state)
 		}
+		state.transportState = "valid_complete_frame"
 		return nil
 	})
 
@@ -193,8 +250,11 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 		return err
 	}
 
+	state.transportState = "clean_eof"
+
 	flushKiroBufferedToolArgs(state, emitDelta)
 
+	disposition := stopDisposition(state.stopReason, len(state.tools) > 0)
 	finishReason := "stop"
 	if len(state.tools) > 0 {
 		finishReason = "tool_calls"
@@ -202,10 +262,103 @@ func transformKiroToSSE(r io.Reader, model string, w io.Writer) error {
 		finishReason = "length"
 	}
 
+	if disposition == StopRetryableProtocolFail ||
+		disposition == StopTerminalIncomplete ||
+		disposition == StopTerminalRefusal ||
+		disposition == StopUnknownFailure {
+		provenance := state.terminalProvenance
+		if provenance == "" {
+			provenance = "metadata_stop_reason"
+		}
+		callTerminal(provenance)
+		writeStreamError(w, 502, fmt.Sprintf("Kiro ended with non-success stop reason: %s", state.stopReason))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		return fmt.Errorf("kiro non-success stop disposition: %s (reason=%s)", disposition, state.stopReason)
+	}
+
+	if state.hasMetering() && state.hasContextUsage && !hasUsageTokens(state.usage) {
+		completion := state.totalContentLength
+		if completion > 0 {
+			completion = completion / 4
+			if completion < 1 {
+				completion = 1
+			}
+		}
+		prompt := 0
+		if state.hasContextUsage {
+			contextWindow := DefaultContextLength
+			for _, m := range KnownModels {
+				if m.ID == state.model {
+					if m.ContextLength > 0 {
+						contextWindow = m.ContextLength
+					}
+					break
+				}
+			}
+			prompt = int(state.contextUsagePct * float64(contextWindow) / 100)
+		}
+		state.usage = map[string]any{
+			"prompt_tokens":     prompt,
+			"completion_tokens": completion,
+			"total_tokens":      prompt + completion,
+		}
+	}
+
 	usage := buildKiroUsage(state)
 	emitFinish(finishReason, usage)
 	fmt.Fprintf(w, "data: [DONE]\n\n")
+
+	provenance := state.terminalProvenance
+	if provenance == "" {
+		provenance = "clean_eventstream_eof"
+	}
+	callTerminal(provenance)
 	return nil
+}
+
+func (s *kiroSSEState) hasMetering() bool {
+	if s.usage == nil {
+		return false
+	}
+	_, ok := s.usage["kiro_credits"]
+	return ok
+}
+
+func hasUsageTokens(usage map[string]any) bool {
+	if usage == nil {
+		return false
+	}
+	pt, _ := usage["prompt_tokens"].(float64)
+	ct, _ := usage["completion_tokens"].(float64)
+	return int(pt) > 0 || int(ct) > 0
+}
+
+func buildDiagnostics(state *kiroSSEState) *IntegrityDiagnostics {
+	responseState := "no_semantic_output"
+	switch {
+	case state.hasToolCalls:
+		responseState = "valid_tool"
+	case state.hasText || state.hasReasoning:
+		responseState = "text_reasoning"
+	case state.explicitStop:
+		responseState = "explicit_stop"
+	}
+	return &IntegrityDiagnostics{
+		TransportState:       state.transportState,
+		StopReason:           state.stopReason,
+		StopDisposition:      stopDisposition(state.stopReason, len(state.tools) > 0),
+		ResponseState:        responseState,
+		EventCounts:          copyEventCounts(state.eventCounts),
+		IncompleteFrameBytes: 0,
+	}
+}
+
+func copyEventCounts(src map[string]int) map[string]int {
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func handleKiroReasoningEvent(payload map[string]any, emitDelta func(map[string]any), state *kiroSSEState) {
@@ -236,7 +389,7 @@ func handleKiroReasoningEvent(payload map[string]any, emitDelta func(map[string]
 	}
 }
 
-func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState) {
+func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState, maxToolBytes int) error {
 	var values []map[string]any
 	if arr, ok := payload["toolUseEvent"].([]any); ok {
 		for _, v := range arr {
@@ -269,6 +422,7 @@ func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState) {
 		if !exists {
 			tool = &kiroToolBuffer{id: toolID, name: name}
 			state.tools[toolID] = tool
+			state.bufferedToolBytes += len(toolID) + len(name) + 32
 		}
 
 		input, ok := value["input"]
@@ -286,12 +440,20 @@ func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState) {
 		case string:
 			buf.stringParts = append(buf.stringParts, iv)
 			buf.isObjectForm = false
+			state.bufferedToolBytes += len(iv)
 		case map[string]any:
 			b, _ := json.Marshal(iv)
+			state.bufferedToolBytes -= len(buf.canonical)
 			buf.canonical = string(b)
 			buf.isObjectForm = true
+			state.bufferedToolBytes += len(buf.canonical)
+		}
+
+		if state.bufferedToolBytes > maxToolBytes {
+			return fmt.Errorf("Kiro buffered tool input exceeded the integrity memory bound (%d bytes)", maxToolBytes)
 		}
 	}
+	return nil
 }
 
 func handleKiroMetricsEvent(payload map[string]any, state *kiroSSEState) {
@@ -307,7 +469,6 @@ func handleKiroMetricsEvent(payload map[string]any, state *kiroSSEState) {
 			"completion_tokens": completion,
 			"total_tokens":      prompt + completion,
 		}
-		// Handle both camelCase and snake_case variants
 		cacheRead := toInt(metrics["cacheReadInputTokens"])
 		if cacheRead == 0 {
 			cacheRead = toInt(metrics["cache_read_input_tokens"])
@@ -402,7 +563,6 @@ func buildKiroUsage(state *kiroSSEState) map[string]any {
 	}
 	prompt := 0
 	if state.hasContextUsage {
-		// Get model's context window; default to 200000
 		contextWindow := DefaultContextLength
 		for _, m := range KnownModels {
 			if m.ID == state.model {
@@ -419,50 +579,6 @@ func buildKiroUsage(state *kiroSSEState) map[string]any {
 		"completion_tokens": completion,
 		"total_tokens":      prompt + completion,
 	}
-}
-
-func normalizeKiroStopReason(payload map[string]any) string {
-	if payload == nil {
-		return ""
-	}
-	raw := ""
-	if v, ok := payload["stopReason"].(string); ok {
-		raw = v
-	} else if v, ok := payload["stop_reason"].(string); ok {
-		raw = v
-	}
-	raw = strings.ToLower(strings.ReplaceAll(raw, "-", "_"))
-	switch raw {
-	case "endturn", "end_turn", "stop", "stop_sequence":
-		return "end_turn"
-	case "tooluse", "tool_use", "tool_calls":
-		return "tool_use"
-	case "maxtokens", "max_tokens", "max_output_tokens", "length":
-		return "max_tokens"
-	}
-	return raw
-}
-
-func mergeKiroStopReason(current, incoming string) string {
-	if incoming == "" {
-		return current
-	}
-	if current == "" {
-		return incoming
-	}
-	severity := func(r string) int {
-		switch r {
-		case "tool_use", "end_turn":
-			return 1
-		case "max_tokens":
-			return 2
-		}
-		return 3
-	}
-	if severity(incoming) > severity(current) {
-		return incoming
-	}
-	return current
 }
 
 func splitInlineThinking(state *kiroThinkingState, raw string, onContent, onReasoning func(string)) {

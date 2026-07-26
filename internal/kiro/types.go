@@ -201,6 +201,62 @@ type EventFrame struct {
 	Payload map[string]any
 }
 
+// ── Stop disposition (kiro.js stopDisposition) ──────────────────────────
+
+type StopDisposition string
+
+const (
+	StopComplete              StopDisposition = "complete"
+	StopToolUse               StopDisposition = "tool_use"
+	StopLength                StopDisposition = "length"
+	StopRetryableProtocolFail StopDisposition = "retryable_protocol_failure"
+	StopTerminalIncomplete    StopDisposition = "terminal_incomplete"
+	StopTerminalRefusal       StopDisposition = "terminal_refusal"
+	StopUnknownFailure        StopDisposition = "unknown_failure"
+)
+
+// IntegrityDiagnostics tracks stream-level integrity metadata (kiro.js diagnostics).
+type IntegrityDiagnostics struct {
+	TerminalProvenance   string            `json:"terminal_provenance"`
+	TransportState       string            `json:"transport_state"`
+	StopReason           string            `json:"stop_reason"`
+	StopDisposition      StopDisposition   `json:"stop_disposition"`
+	ResponseState        string            `json:"response_state"`
+	EventCounts          map[string]int    `json:"event_counts"`
+	IncompleteFrameBytes int               `json:"incomplete_frame_bytes"`
+}
+
+// IntegrityResult from validating buffered SSE content.
+type IntegrityResult struct {
+	Kind        string               `json:"kind"`
+	Bytes       []byte               `json:"-"`
+	Message     string               `json:"message,omitempty"`
+	Diagnostics *IntegrityDiagnostics `json:"diagnostics,omitempty"`
+}
+
+const (
+	IntegrityComplete        = "complete"
+	IntegrityEllipsis        = "ellipsis"
+	IntegrityShortFinal      = "short_final"
+	IntegrityInvalidTool     = "invalid_tool"
+	IntegrityTerminalStop    = "terminal_stop"
+	IntegrityUpstreamError   = "upstream_error"
+	IntegrityMissingTerminal = "missing_terminal"
+	IntegrityAccountError    = "account_error"
+)
+
+const (
+	RepairTool      = "Retry the previous response because its Kiro tool_call wrapper was malformed. If you use the wrapper tool named tool_call, its input must contain a non-empty name and an arguments field."
+	RepairEllipsis  = "Retry the previous response because it ended with only an ellipsis. Return the complete final answer, not only ... or ...."
+	RepairShortFinal = "Retry the previous response because its final only announced a future action. Complete the check now and return the result or a concrete blocker."
+)
+
+const (
+	KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES = 8 * 1024 * 1024
+	EventstreamMaxMessageBytes             = 24 * 1024 * 1024
+	EventstreamMaxHeadersBytes             = 128 * 1024
+)
+
 // ── OmniRoute-derived stream types ─────────────────────────────────────────
 
 // UsageSummary tracks token usage across the stream.
