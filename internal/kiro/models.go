@@ -8,10 +8,6 @@ import (
 func ResolveModel(model string) ResolvedModel {
 	model = strings.TrimPrefix(model, "kr/")
 
-	if model == "auto" || model == "" {
-		return ResolvedModel{Upstream: AutoModel, Thinking: true}
-	}
-
 	agentic := false
 	thinking := false
 
@@ -22,6 +18,10 @@ func ResolveModel(model string) ResolvedModel {
 	if strings.HasSuffix(model, thinkingSuffix) {
 		thinking = true
 		model = model[:len(model)-len(thinkingSuffix)]
+	}
+
+	if model == "auto" || model == "" {
+		return ResolvedModel{Upstream: AutoModel, Thinking: thinking}
 	}
 
 	return ResolvedModel{Upstream: model, Agentic: agentic, Thinking: thinking}
