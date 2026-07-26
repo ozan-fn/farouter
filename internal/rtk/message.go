@@ -3,39 +3,7 @@ package rtk
 import (
 	"encoding/json"
 	"log"
-	"strings"
 )
-
-// Size guards match VansRouter open-sse/rtk/constants.js
-const (
-	MinCompressSize = 500           // bytes; skip tiny blobs
-	RawCap          = 10 * 1024 * 1024 // 10 MiB; skip oversized blobs
-)
-
-// ProcessToolMessages scans messages array and applies RTK filtering to tool outputs
-func ProcessToolMessages(messages []map[string]any) []map[string]any {
-	for i := range messages {
-		msg := messages[i]
-
-		// Only process tool role messages — user/assistant messages are NOT tool output
-		role, _ := msg["role"].(string)
-		if role != "tool" {
-			continue
-		}
-
-		content := extractContent(msg["content"])
-		if content == "" {
-			continue
-		}
-
-		filtered := ProcessOutput(content)
-		if filtered != content {
-			msg["content"] = filtered
-		}
-	}
-
-	return messages
-}
 
 // ProcessKiroBody applies RTK filtering directly on the Kiro payload structure.
 // Navigates conversationState.history[].userInputMessage.userInputMessageContext.toolResults[].content[].text
@@ -103,12 +71,19 @@ func ProcessKiroBody(body []byte) []byte {
 				if len(text) < MinCompressSize || len(text) > RawCap {
 					continue
 				}
-				filtered := ProcessOutput(text)
-				if filtered != "" && filtered != text {
-					log.Printf("[rtk] kiro toolResult: %dB→%dB", len(text), len(filtered))
-					partMap["text"] = filtered
-					changed = true
+
+				// Use autoDetectFilter + safeApply matching VansRouter
+				p := autoDetectFilter(text)
+				if p == nil {
+					continue
 				}
+				filtered := safeApply(p, text)
+				if filtered == "" || len(filtered) >= len(text) {
+					continue
+				}
+				log.Printf("[rtk] kiro toolResult: %dB→%dB (%s)", len(text), len(filtered), p.Name())
+				partMap["text"] = filtered
+				changed = true
 			}
 		}
 	}
@@ -122,24 +97,4 @@ func ProcessKiroBody(body []byte) []byte {
 		return body
 	}
 	return b
-}
-
-func extractContent(content any) string {
-	switch v := content.(type) {
-	case string:
-		return v
-	case []any:
-		var parts []string
-		for _, part := range v {
-			if m, ok := part.(map[string]any); ok {
-				if text, ok := m["text"].(string); ok {
-					parts = append(parts, text)
-				}
-			}
-		}
-		return strings.Join(parts, "\n")
-	default:
-		b, _ := json.Marshal(content)
-		return string(b)
-	}
 }

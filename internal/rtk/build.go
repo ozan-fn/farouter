@@ -1,298 +1,168 @@
 package rtk
 
 import (
+	"regexp"
 	"strings"
 )
 
-// ── go build ────────────────────────────────────────────────────────────────
+// ── BuildOutputParser — port of VansRouter filters/buildOutput.js ─────
+type BuildOutputParser struct{}
 
-type GoBuildParser struct{}
+func (p *BuildOutputParser) Name() string { return "build-output" }
 
-func (p *GoBuildParser) Name() string { return "go-build" }
-
-func (p *GoBuildParser) Match(output string) bool {
-	return strings.Contains(output, "# ") && (strings.Contains(output, "cannot") ||
-		strings.Contains(output, "undefined") || strings.Contains(output, "syntax") ||
-		strings.Contains(output, "expected"))
-}
-
-func (p *GoBuildParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "# ") {
-			result = append(result, line)
-		} else if len(result) > 0 && !strings.HasPrefix(line, "#") {
-			result = append(result, "  "+line)
-		}
+func (p *BuildOutputParser) Parse(input string) string {
+	lines := strings.Split(input, "\n")
+	if len(lines) == 0 {
+		return input
 	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
 
-// ── go vet ──────────────────────────────────────────────────────────────────
+	var errors, warnings, deprecations []string
+	var summary []string
+	compilingCount := 0
+	downloadingCount := 0
+	inCargoError := false
 
-type GoVetParser struct{}
-
-func (p *GoVetParser) Name() string { return "go-vet" }
-
-func (p *GoVetParser) Match(output string) bool {
-	return strings.Contains(output, "vet:") || strings.Contains(output, "declared but not used")
-}
-
-func (p *GoVetParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, ".go:") {
-			result = append(result, line)
-		}
-	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
-
-// ── cargo build ─────────────────────────────────────────────────────────────
-
-type CargoBuildParser struct{}
-
-func (p *CargoBuildParser) Name() string { return "cargo-build" }
-
-func (p *CargoBuildParser) Match(output string) bool {
-	return (strings.Contains(output, "Compiling ") || strings.Contains(output, "error[")) &&
-		strings.Contains(output, "Finished")
-}
-
-func (p *CargoBuildParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	hasError := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "error[") || strings.HasPrefix(line, "error:") {
-			result = append(result, line)
-			hasError = true
-		} else if hasError && strings.HasPrefix(line, "  ") {
-			result = append(result, line)
-		} else if strings.HasPrefix(line, "warning[") || strings.HasPrefix(line, "warning:") {
-			result = append(result, line)
-		} else if strings.HasPrefix(line, "Finished") {
-			if !hasError {
-				result = append(result, line)
-			}
-		}
-	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
-
-// ── cargo clippy ────────────────────────────────────────────────────────────
-
-type CargoClippyParser struct{}
-
-func (p *CargoClippyParser) Name() string { return "cargo-clippy" }
-
-func (p *CargoClippyParser) Match(output string) bool {
-	return strings.Contains(output, "clippy") || strings.Contains(output, "warning:")
-}
-
-func (p *CargoClippyParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "warning:") || strings.Contains(line, "error:") ||
-			strings.Contains(line, "help:") || strings.Contains(line, "for further") {
-			result = append(result, line)
-		}
-	}
-	if len(result) == 0 {
-		return "ok (no warnings)"
-	}
-	if len(result) > 20 {
-		result = result[:20]
-		result = append(result, "[... more]")
-	}
-	return strings.Join(result, "\n")
-}
-
-// ── tsc ─────────────────────────────────────────────────────────────────────
-
-type TscParser struct{}
-
-func (p *TscParser) Name() string { return "tsc" }
-
-func (p *TscParser) Match(output string) bool {
-	return strings.Contains(output, ".ts(") || strings.Contains(output, ".tsx(") ||
-		strings.Contains(output, "error TS") || strings.Contains(output, "Cannot find")
-}
-
-func (p *TscParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, ".ts(") || strings.Contains(line, ".tsx(") {
-			result = append(result, line)
-		} else if strings.HasPrefix(line, "  ") && len(result) > 0 {
-			result = append(result, line)
-		} else if strings.Contains(line, "error") || strings.Contains(line, "Error") {
-			result = append(result, line)
-		}
-	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
-
-// ── eslint ──────────────────────────────────────────────────────────────────
-
-type EslintParser struct{}
-
-func (p *EslintParser) Name() string { return "eslint" }
-
-func (p *EslintParser) Match(output string) bool {
-	return strings.Contains(output, "✖") ||
-		(strings.Contains(output, "problems") && strings.Contains(output, "errors"))
-}
-
-func (p *EslintParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, "✖") || strings.Contains(line, "problems") ||
-			strings.Contains(line, "errors") || strings.Contains(line, "warnings") {
-			result = append(result, line)
-		}
-	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
-
-// ── prettier ────────────────────────────────────────────────────────────────
-
-type PrettierParser struct{}
-
-func (p *PrettierParser) Name() string { return "prettier" }
-
-func (p *PrettierParser) Match(output string) bool {
-	return strings.Contains(output, "[warn]") || strings.Contains(output, "[error]") ||
-		strings.Contains(output, "prettier")
-}
-
-func (p *PrettierParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+
+		// Continuation of cargo error block
+		if inCargoError {
+			if trimmed == "" {
+				inCargoError = false
+				continue
+			}
+			if reCargoCont.MatchString(line) {
+				errors = append(errors, line)
+				continue
+			}
+			inCargoError = false
+		}
 		if trimmed == "" {
 			continue
 		}
-		if strings.Contains(trimmed, "[warn]") || strings.Contains(trimmed, "[error]") {
-			result = append(result, trimmed)
-		}
-	}
-	hasCheck := false
-	for _, line := range lines {
-		if strings.Contains(line, "checked") || strings.Contains(line, "All done") {
-			hasCheck = true
-			break
-		}
-	}
-	if len(result) == 0 && hasCheck {
-		return "ok"
-	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
 
-// ── next build ──────────────────────────────────────────────────────────────
-
-type NextBuildParser struct{}
-
-func (p *NextBuildParser) Name() string { return "next" }
-
-func (p *NextBuildParser) Match(output string) bool {
-	return strings.Contains(output, "Creating an optimized production build") ||
-		strings.Contains(output, "Route (app)")
-}
-
-func (p *NextBuildParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		if reNpmErr.MatchString(trimmed) {
+			errors = append(errors, line)
 			continue
 		}
-		if strings.Contains(line, "✓") || strings.Contains(line, "✗") ||
-			strings.Contains(line, "×") || strings.Contains(line, "error") ||
-			strings.Contains(line, "Error") || strings.Contains(line, "Failed") {
-			result = append(result, line)
-		}
-	}
-	if len(result) == 0 {
-		return "ok"
-	}
-	return strings.Join(result, "\n")
-}
-
-// ── golangci-lint ───────────────────────────────────────────────────────────
-
-type GolangciLintParser struct{}
-
-func (p *GolangciLintParser) Name() string { return "golangci-lint" }
-
-func (p *GolangciLintParser) Match(output string) bool {
-	return strings.Contains(output, "golangci-lint") || strings.Contains(output, ".go:") ||
-		(strings.Contains(output, "issues") && strings.Contains(output, "out of"))
-}
-
-func (p *GolangciLintParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		if reNpmDeprecate.MatchString(trimmed) {
+			deprecations = append(deprecations, line)
 			continue
 		}
-		if strings.Contains(line, ".go:") || strings.Contains(line, "issues") ||
-			strings.Contains(line, "result") {
-			result = append(result, line)
+		if reNpmWarn.MatchString(trimmed) {
+			warnings = append(warnings, line)
+			continue
+		}
+		if reErrorLine.MatchString(trimmed) {
+			errors = append(errors, line)
+			inCargoError = true
+			continue
+		}
+		if reWarningLine.MatchString(trimmed) {
+			warnings = append(warnings, line)
+			inCargoError = true
+			continue
+		}
+		if reErrorPrefix.MatchString(trimmed) {
+			errors = append(errors, line)
+			continue
+		}
+		if reBuildFailed.MatchString(trimmed) || reBuildFailBracket.MatchString(trimmed) {
+			errors = append(errors, line)
+			continue
+		}
+		if reWarningBracket.MatchString(trimmed) {
+			warnings = append(warnings, line)
+			continue
+		}
+		if reCompiling.MatchString(trimmed) {
+			compilingCount++
+			continue
+		}
+		if reDownloading.MatchString(trimmed) {
+			downloadingCount++
+			continue
+		}
+		if reSummaryLine.MatchString(trimmed) ||
+			reBuildSuccess.MatchString(trimmed) ||
+			reVulnCount.MatchString(trimmed) ||
+			reSuccessInstall.MatchString(trimmed) ||
+			reNpmAudit.MatchString(trimmed) ||
+			reFunding.MatchString(trimmed) {
+			summary = append(summary, line)
+			continue
 		}
 	}
-	if len(result) == 0 {
-		return "ok"
+
+	var out strings.Builder
+	keepDep := deprecations
+	if len(keepDep) > 3 {
+		keepDep = keepDep[:3]
 	}
-	if len(result) > 20 {
-		result = result[:20]
-		result = append(result, "[... more]")
+	for _, d := range keepDep {
+		out.WriteString(d)
+		out.WriteString("\n")
 	}
-	return strings.Join(result, "\n")
+	if len(deprecations) > 3 {
+		out.WriteString("... +")
+		out.WriteString(itoa(len(deprecations) - 3))
+		out.WriteString(" more deprecated packages\n")
+	}
+	if compilingCount > 0 {
+		out.WriteString("Compiled ")
+		out.WriteString(itoa(compilingCount))
+		out.WriteString(" packages\n")
+	}
+	if downloadingCount > 0 {
+		out.WriteString("Downloaded ")
+		out.WriteString(itoa(downloadingCount))
+		out.WriteString(" packages\n")
+	}
+	for _, e := range errors {
+		out.WriteString(e)
+		out.WriteString("\n")
+	}
+	keepWarnings := warnings
+	if len(keepWarnings) > 5 {
+		keepWarnings = keepWarnings[:5]
+	}
+	for _, w := range keepWarnings {
+		out.WriteString(w)
+		out.WriteString("\n")
+	}
+	if len(warnings) > 5 {
+		out.WriteString("... +")
+		out.WriteString(itoa(len(warnings) - 5))
+		out.WriteString(" more warnings\n")
+	}
+	for _, s := range summary {
+		out.WriteString(s)
+		out.WriteString("\n")
+	}
+	result := strings.TrimRight(out.String(), "\n")
+	if result == "" {
+		return input
+	}
+	return result
 }
+
+var (
+	reCargoCont     = regexp.MustCompile(`^\s*(-->|\||\d+\s*\||=)`)
+	reNpmErr        = regexp.MustCompile(`(?i)^npm (ERR!|error)`)
+	reNpmDeprecate  = regexp.MustCompile(`(?i)^npm warn deprecated`)
+	reNpmWarn       = regexp.MustCompile(`(?i)^npm warn|^yarn warn`)
+	reErrorLine     = regexp.MustCompile(`(?i)^error(\[|:)|^error -->`)
+	reWarningLine   = regexp.MustCompile(`(?i)^warning(\[|:)|^warning -->`)
+	reErrorPrefix   = regexp.MustCompile(`(?i)^ERROR:`)
+	reBuildFailed   = regexp.MustCompile(`(?i)^BUILD FAILED`)
+	reBuildFailBracket = regexp.MustCompile(`(?i)^\[ERROR\]`)
+	reWarningBracket = regexp.MustCompile(`(?i)^\[WARNING\]`)
+	reCompiling     = regexp.MustCompile(`(?i)^\s*Compiling\s+\S+`)
+	reDownloading   = regexp.MustCompile(`(?i)^\s*(Downloading\s+\S+|Fetching\s+)`)
+	reSummaryLine   = regexp.MustCompile(`(?i)^(added|removed|changed|audited|installed)\s+\d+\s+package`)
+	reBuildSuccess  = regexp.MustCompile(`(?i)^\s*Finished\s+|^(BUILD SUCCESS|BUILD SUCCESSFUL)`)
+	reVulnCount     = regexp.MustCompile(`^\d+\s+(vulnerabilities|packages?|warnings?|errors?)`)
+	reSuccessInstall = regexp.MustCompile(`(?i)^Successfully (installed|built)`)
+	reNpmAudit      = regexp.MustCompile(`(?i)^(To address .* issues|Run \x60npm (audit|fund)\x60)`)
+	reFunding       = regexp.MustCompile(`packages are looking for funding`)
+)

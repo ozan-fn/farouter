@@ -5,281 +5,352 @@ import (
 	"strings"
 )
 
-// ── Git Status ──────────────────────────────────────────────────────────────
-
-type GitStatusParser struct{}
-
-func (p *GitStatusParser) Name() string { return "git-status" }
-
-func (p *GitStatusParser) Match(output string) bool {
-	return strings.Contains(output, "On branch") ||
-		strings.Contains(output, "nothing to commit") ||
-		strings.Contains(output, "Changes not staged") ||
-		strings.Contains(output, "Changes to be committed") ||
-		strings.Contains(output, "Untracked files")
-}
-
-func (p *GitStatusParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	
-	var branch string
-	var status []string
-	
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		
-		// Extract branch
-		if strings.HasPrefix(line, "On branch ") {
-			branch = strings.TrimPrefix(line, "On branch ")
-		} else if strings.Contains(line, "Your branch is up to date with") {
-			re := regexp.MustCompile(`'([^']+)'`)
-			if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-				branch += "..." + matches[1]
-			}
-		} else if strings.Contains(line, "Your branch is ahead of") {
-			re := regexp.MustCompile(`'([^']+)' by (\d+)`)
-			if matches := re.FindStringSubmatch(line); len(matches) > 2 {
-				branch += "..." + matches[1] + " +" + matches[2]
-			}
-		} else if strings.Contains(line, "Your branch is behind") {
-			re := regexp.MustCompile(`'([^']+)' by (\d+)`)
-			if matches := re.FindStringSubmatch(line); len(matches) > 2 {
-				branch += "..." + matches[1] + " -" + matches[2]
-			}
-		}
-		
-		// Status lines
-		if strings.HasPrefix(line, "modified:") || strings.HasPrefix(line, "deleted:") ||
-			strings.HasPrefix(line, "new file:") || strings.HasPrefix(line, "renamed:") {
-			status = append(status, line)
-		}
-	}
-	
-	if branch == "" {
-		branch = "main"
-	}
-	
-	result := "* " + branch
-	
-	if strings.Contains(output, "nothing to commit") {
-		result += "\nclean — nothing to commit"
-	} else if len(status) > 0 {
-		result += "\n" + strings.Join(status, "\n")
-	}
-	
-	return result
-}
-
-// ── Git Log ─────────────────────────────────────────────────────────────────
-
-type GitLogParser struct{}
-
-func (p *GitLogParser) Name() string { return "git-log" }
-
-func (p *GitLogParser) Match(output string) bool {
-	return strings.Contains(output, "commit ") && strings.Contains(output, "Author:")
-}
-
-func (p *GitLogParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
-	var result []string
-	
-	var hash, author, subject string
-	var dateStr string
-	bodyLines := 0
-	
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		
-		if strings.HasPrefix(line, "commit ") {
-			if hash != "" {
-				// Flush previous commit
-				compact := hash[:7] + " " + subject
-				if dateStr != "" {
-					compact += " (" + dateStr + ")"
-				}
-				if author != "" {
-					compact += " <" + author + ">"
-				}
-				if bodyLines > 0 {
-					compact += "\n  [+" + itoa(bodyLines) + " lines omitted]"
-				}
-				result = append(result, compact)
-			}
-			hash = strings.TrimPrefix(line, "commit ")
-			author = ""
-			subject = ""
-			dateStr = ""
-			bodyLines = 0
-		} else if strings.HasPrefix(line, "Author:") {
-			authorFull := strings.TrimPrefix(line, "Author:")
-			authorFull = strings.TrimSpace(authorFull)
-			// Extract name only
-			if idx := strings.Index(authorFull, "<"); idx > 0 {
-				author = strings.TrimSpace(authorFull[:idx])
-			} else {
-				author = authorFull
-			}
-		} else if strings.HasPrefix(line, "Date:") {
-			dateRaw := strings.TrimPrefix(line, "Date:")
-			dateRaw = strings.TrimSpace(dateRaw)
-			// Convert to relative time (simplified)
-			dateStr = "recently"
-		} else if line != "" && subject == "" && !strings.HasPrefix(line, "Merge:") {
-			subject = line
-		} else if line != "" && subject != "" {
-			bodyLines++
-		}
-	}
-	
-	// Flush last commit
-	if hash != "" {
-		compact := hash[:7] + " " + subject
-		if dateStr != "" {
-			compact += " (" + dateStr + ")"
-		}
-		if author != "" {
-			compact += " <" + author + ">"
-		}
-		if bodyLines > 0 {
-			compact += "\n  [+" + itoa(bodyLines) + " lines omitted]"
-		}
-		result = append(result, compact)
-	}
-	
-	return strings.Join(result, "\n")
-}
-
-// ── Git Diff ────────────────────────────────────────────────────────────────
-
+// ── GitDiffParser — port of VansRouter filters/gitDiff.js ──────────────
 type GitDiffParser struct{}
 
 func (p *GitDiffParser) Name() string { return "git-diff" }
 
-func (p *GitDiffParser) Match(output string) bool {
-	return strings.Contains(output, "diff --git") || strings.Contains(output, "@@")
-}
+func (p *GitDiffParser) Parse(diff string) string {
+	lines := strings.Split(diff, "\n")
+	if len(lines) == 0 {
+		return diff
+	}
 
-func (p *GitDiffParser) Parse(output string) string {
-	lines := strings.Split(output, "\n")
 	var result []string
-	
+	currentFile := ""
+	added := 0
+	removed := 0
+	inHunk := false
+	hunkShown := 0
+	hunkSkipped := 0
+	wasTruncated := false
+	maxLines := 500
+	maxHunk := GIT_DIFF_HUNK_MAX
+
+outer:
 	for _, line := range lines {
-		// Skip index, mode, ---/+++ headers
-		if strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "new file mode") ||
-			strings.HasPrefix(line, "deleted file mode") || strings.HasPrefix(line, "---") ||
-			strings.HasPrefix(line, "+++") {
-			continue
+		if strings.HasPrefix(line, "diff --git") {
+			if hunkSkipped > 0 {
+				result = append(result, "  ... ("+itoa(hunkSkipped)+" lines truncated)")
+				wasTruncated = true
+				hunkSkipped = 0
+			}
+			if currentFile != "" && (added > 0 || removed > 0) {
+				result = append(result, "  +"+itoa(added)+" -"+itoa(removed))
+			}
+			parts := strings.SplitN(line, " b/", 2)
+			currentFile = "unknown"
+			if len(parts) > 1 {
+				currentFile = parts[1]
+			}
+			result = append(result, "")
+			result = append(result, currentFile)
+			added = 0
+			removed = 0
+			inHunk = false
+			hunkShown = 0
+		} else if strings.HasPrefix(line, "@@") {
+			if hunkSkipped > 0 {
+				result = append(result, "  ... ("+itoa(hunkSkipped)+" lines truncated)")
+				wasTruncated = true
+				hunkSkipped = 0
+			}
+			inHunk = true
+			hunkShown = 0
+			result = append(result, "  "+line)
+		} else if inHunk {
+			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+				added++
+				if hunkShown < maxHunk {
+					result = append(result, "  "+line)
+					hunkShown++
+				} else {
+					hunkSkipped++
+				}
+			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+				removed++
+				if hunkShown < maxHunk {
+					result = append(result, "  "+line)
+					hunkShown++
+				} else {
+					hunkSkipped++
+				}
+			} else if hunkShown < maxHunk && !strings.HasPrefix(line, "\\") {
+				if hunkShown > 0 {
+					result = append(result, "  "+line)
+					hunkShown++
+				}
+			}
 		}
-		
-		// Keep diff markers, hunks, and changed lines
-		if strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "@@") ||
-			strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
-			result = append(result, line)
+		if len(result) >= maxLines {
+			result = append(result, "")
+			result = append(result, "... (more changes truncated)")
+			wasTruncated = true
+			break outer
 		}
 	}
-	
-	if len(result) == 0 {
-		return "(no changes)"
+
+	if hunkSkipped > 0 {
+		result = append(result, "  ... ("+itoa(hunkSkipped)+" lines truncated)")
+		wasTruncated = true
 	}
-	
+	if currentFile != "" && (added > 0 || removed > 0) {
+		result = append(result, "  +"+itoa(added)+" -"+itoa(removed))
+	}
+	if wasTruncated {
+		result = append(result, "[full diff: rtk git diff --no-compact]")
+	}
 	return strings.Join(result, "\n")
 }
 
-// ── Git Push ────────────────────────────────────────────────────────────────
+// ── GitStatusParser — port of VansRouter filters/gitStatus.js ──────────
+type GitStatusParser struct{}
 
-type GitPushParser struct{}
+func (p *GitStatusParser) Name() string { return "git-status" }
 
-func (p *GitPushParser) Name() string { return "git-push" }
-
-func (p *GitPushParser) Match(output string) bool {
-	return (strings.Contains(output, "To ") && strings.Contains(output, "->")) ||
-		strings.Contains(output, "Everything up-to-date")
-}
-
-func (p *GitPushParser) Parse(output string) string {
-	if strings.Contains(output, "Everything up-to-date") {
-		return "ok (up-to-date)"
-	}
-	
+func (p *GitStatusParser) Parse(output string) string {
 	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "->") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				return "ok " + parts[len(parts)-1]
+	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
+		return "Clean working tree"
+	}
+
+	branch := ""
+	var stagedFiles, modifiedFiles, untrackedFiles []string
+	staged := 0
+	modified := 0
+	untracked := 0
+	conflicts := 0
+
+	for _, raw := range lines {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+
+		// Long-form branch: "On branch main"
+		if m := reBranchOn.FindStringSubmatch(raw); len(m) > 1 {
+			branch = m[1]
+			continue
+		}
+		// Porcelain branch: "## main...origin/main"
+		if strings.HasPrefix(raw, "##") {
+			branch = strings.TrimSpace(raw[2:])
+			continue
+		}
+		// Porcelain status: "XY file"
+		if len(raw) >= 3 && rePorcelainStatus.MatchString(raw[:2]) && raw[2] == ' ' {
+			x := raw[0]
+			y := raw[1]
+			file := strings.TrimSpace(raw[3:])
+			if raw[:2] == "??" {
+				untracked++
+				untrackedFiles = append(untrackedFiles, file)
+				continue
 			}
+			if strings.Contains("MADRC", string(x)) {
+				staged++
+				stagedFiles = append(stagedFiles, file)
+			} else if x == 'U' {
+				conflicts++
+			}
+			if y == 'M' || y == 'D' {
+				modified++
+				modifiedFiles = append(modifiedFiles, file)
+			}
+			continue
+		}
+		// Long-form: "modified:   path"
+		if m := reLongStatus.FindStringSubmatch(raw); len(m) > 2 {
+			kind := m[1]
+			path := strings.TrimSpace(m[2])
+			switch kind {
+			case "both modified":
+				conflicts++
+			case "modified", "deleted":
+				modified++
+				modifiedFiles = append(modifiedFiles, path)
+			case "new file", "renamed":
+				staged++
+				stagedFiles = append(stagedFiles, path)
+			}
+			continue
 		}
 	}
-	
-	return "ok"
-}
 
-// ── Git Pull ────────────────────────────────────────────────────────────────
-
-type GitPullParser struct{}
-
-func (p *GitPullParser) Name() string { return "git-pull" }
-
-func (p *GitPullParser) Match(output string) bool {
-	return strings.Contains(output, "Already up to date") ||
-		strings.Contains(output, "Fast-forward") ||
-		strings.Contains(output, "Updating ")
-}
-
-func (p *GitPullParser) Parse(output string) string {
-	if strings.Contains(output, "Already up to date") {
-		return "ok (up-to-date)"
+	var out strings.Builder
+	if branch != "" {
+		out.WriteString("* ")
+		out.WriteString(branch)
+		out.WriteString("\n")
 	}
-	
-	lines := strings.Split(output, "\n")
-	var stats []string
-	
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "file changed") || strings.Contains(line, "files changed") {
-			stats = append(stats, line)
+	if staged > 0 {
+		out.WriteString("+ Staged: ")
+		out.WriteString(itoa(staged))
+		out.WriteString(" files\n")
+		show := stagedFiles
+		if len(show) > STATUS_MAX_FILES {
+			show = show[:STATUS_MAX_FILES]
+		}
+		for _, f := range show {
+			out.WriteString("   ")
+			out.WriteString(f)
+			out.WriteString("\n")
+		}
+		if len(stagedFiles) > STATUS_MAX_FILES {
+			out.WriteString("   ... +")
+			out.WriteString(itoa(len(stagedFiles) - STATUS_MAX_FILES))
+			out.WriteString(" more\n")
 		}
 	}
-	
-	if len(stats) > 0 {
-		return "ok " + strings.Join(stats, ", ")
+	if modified > 0 {
+		out.WriteString("~ Modified: ")
+		out.WriteString(itoa(modified))
+		out.WriteString(" files\n")
+		show := modifiedFiles
+		if len(show) > STATUS_MAX_FILES {
+			show = show[:STATUS_MAX_FILES]
+		}
+		for _, f := range show {
+			out.WriteString("   ")
+			out.WriteString(f)
+			out.WriteString("\n")
+		}
+		if len(modifiedFiles) > STATUS_MAX_FILES {
+			out.WriteString("   ... +")
+			out.WriteString(itoa(len(modifiedFiles) - STATUS_MAX_FILES))
+			out.WriteString(" more\n")
+		}
 	}
-	
-	return "ok"
-}
-
-// ── Git Add ─────────────────────────────────────────────────────────────────
-
-type GitAddParser struct{}
-
-func (p *GitAddParser) Name() string { return "git-add" }
-
-func (p *GitAddParser) Match(output string) bool {
-	// git add has zero output when successful, or "nothing added..."
-	return output == "" || output == "(no output)" || output == "nothing added, but untracked files present"
-}
-
-func (p *GitAddParser) Parse(output string) string {
-	return "ok"
-}
-
-// ── Git Commit ──────────────────────────────────────────────────────────────
-
-type GitCommitParser struct{}
-
-func (p *GitCommitParser) Name() string { return "git-commit" }
-
-func (p *GitCommitParser) Match(output string) bool {
-	// Must be actual git commit output: [branch hash] or "nothing to commit"
-	return strings.HasPrefix(output, "[") &&
-		(strings.Contains(output, "]: ") || strings.Contains(output, "(root-commit)"))
-}
-
-func (p *GitCommitParser) Parse(output string) string {
-	re := regexp.MustCompile(`\[.*?([a-f0-9]{7,40})\]`)
-	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
-		return "ok " + matches[1][:7]
+	if untracked > 0 {
+		out.WriteString("? Untracked: ")
+		out.WriteString(itoa(untracked))
+		out.WriteString(" files\n")
+		show := untrackedFiles
+		if len(show) > STATUS_MAX_UNTRACKED {
+			show = show[:STATUS_MAX_UNTRACKED]
+		}
+		for _, f := range show {
+			out.WriteString("   ")
+			out.WriteString(f)
+			out.WriteString("\n")
+		}
+		if len(untrackedFiles) > STATUS_MAX_UNTRACKED {
+			out.WriteString("   ... +")
+			out.WriteString(itoa(len(untrackedFiles) - STATUS_MAX_UNTRACKED))
+			out.WriteString(" more\n")
+		}
 	}
-	return "ok"
+	if conflicts > 0 {
+		out.WriteString("conflicts: ")
+		out.WriteString(itoa(conflicts))
+		out.WriteString(" files\n")
+	}
+	if staged == 0 && modified == 0 && untracked == 0 && conflicts == 0 {
+		out.WriteString("clean — nothing to commit\n")
+	}
+	return strings.TrimRight(out.String(), "\n")
 }
+
+var (
+	reBranchOn        = regexp.MustCompile(`^On branch (\S+)`)
+	rePorcelainStatus = regexp.MustCompile(`^[ MADRCU?!][ MADRCU?!]$`)
+	reLongStatus      = regexp.MustCompile(`^\s*(modified|new file|deleted|renamed|both modified):\s+(.+)$`)
+)
+
+// ── GitLogParser — port of VansRouter filters/gitLog.js ────────────────
+type GitLogParser struct{}
+
+func (p *GitLogParser) Name() string { return "git-log" }
+
+func (p *GitLogParser) Parse(text string) string {
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	var out []string
+	skipped := 0
+	inCommit := false
+	subjectSeen := false
+	maxLines := GIT_LOG_MAX_LINES
+
+	pushLine := func(l string) {
+		if len(out) < maxLines {
+			out = append(out, l)
+		} else {
+			skipped++
+		}
+	}
+
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, " \t\r")
+		trimmed := strings.TrimSpace(line)
+
+		// "commit <sha>" header (possibly with graph decoration)
+		if reCommitHeader.MatchString(trimmed) {
+			inCommit = true
+			subjectSeen = false
+			pushLine(line)
+			continue
+		}
+		if inCommit {
+			if reAuthorDate.MatchString(trimmed) {
+				pushLine(trimmed)
+				continue
+			}
+			if trimmed == "" {
+				continue
+			}
+			// Indented subject (4 spaces, possibly with graph prefix)
+			if !subjectSeen && reSubject.MatchString(line) {
+				pushLine("  Subject: " + trimmed)
+				subjectSeen = true
+				continue
+			}
+			// Stat summary: "N file(s) changed..."
+			if reFileChanged.MatchString(trimmed) {
+				pushLine("  " + trimmed)
+				continue
+			}
+			// Embedded diff header
+			if strings.HasPrefix(trimmed, "diff --git ") {
+				pushLine("  ... diff body omitted")
+				continue
+			}
+			continue
+		}
+		// Not in commit block — oneline/graph mode
+		if m := reGraphMatch.FindStringSubmatch(trimmed); len(m) > 1 {
+			pushLine(m[1])
+			continue
+		}
+		if rePlainOneline.MatchString(trimmed) {
+			pushLine(trimmed)
+			continue
+		}
+		if rePureGraph.MatchString(trimmed) {
+			continue
+		}
+		pushLine(trimmed)
+	}
+
+	if skipped > 0 {
+		out = append(out, "... ("+itoa(skipped)+" more lines)")
+	}
+	result := strings.Join(out, "\n")
+	if result == "" && text != "" {
+		return text
+	}
+	if len(result) > len(text) {
+		return text
+	}
+	return result
+}
+
+var (
+	reCommitHeader  = regexp.MustCompile(`(?i)^[*|/\\ ]*commit [0-9a-f]{7,40}$`)
+	reAuthorDate    = regexp.MustCompile(`(?i)^[*|/\\ ]*(Author|Date):`)
+	reSubject       = regexp.MustCompile(`^[*|/\\ ]*    \S`)
+	reFileChanged   = regexp.MustCompile(`^\d+ file\w* changed`)
+	reGraphMatch    = regexp.MustCompile(`^[*|/\\ ]+([0-9a-f]{7,40}\s+.+)`)
+	rePlainOneline  = regexp.MustCompile(`^[0-9a-f]{7,40}\s+`)
+	rePureGraph     = regexp.MustCompile(`^[*|/\\ ]+$`)
+)
