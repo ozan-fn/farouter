@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"farouter/internal/kiro"
+	"farouter/internal/rtk"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -52,6 +53,7 @@ type Config struct {
 	ActiveBatchIds []string        `json:"activeBatchIds,omitempty"`
 	CurrentSlot    int             `json:"currentSlot,omitempty"`
 	StickyCount    int             `json:"stickyCount,omitempty"`
+	RTKEnabled     bool            `json:"rtkEnabled,omitempty"`
 	Accounts       []AccountConfig `json:"accounts"`
 }
 
@@ -84,6 +86,7 @@ var (
 	sessions   = map[string]sessionEntry{}
 
 	cfgPassword string
+	rtkEnabled  = true
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -112,6 +115,7 @@ func (a *accountState) getCreds() (kiro.Credentials, error) {
 		a.failedRefresh = 0
 		a.accessToken = result.AccessToken
 		a.expiry = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+		a.cfg.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
 		if result.ProfileArn != "" {
 			a.cfg.ProfileArn = result.ProfileArn
 		}
@@ -128,6 +132,7 @@ func (a *accountState) markExhausted() {
 	a.mu.Lock()
 	a.exhausted = true
 	a.remaining = 0
+	a.cfg.Exhausted = true
 	a.mu.Unlock()
 }
 
@@ -291,7 +296,10 @@ func pickAccount(exclude map[*accountState]bool) *accountState {
 func saveConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
-	cfg := Config{Password: cfgPassword}
+	cfg := Config{
+		Password:   cfgPassword,
+		RTKEnabled: rtkEnabled,
+	}
 	rotationMu.Lock()
 	cfg.CurrentSlot = currentSlot
 	cfg.StickyCount = stickyCount
@@ -328,6 +336,14 @@ func loadConfig() {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		log.Fatalf("parse config: %v", err)
 	}
+
+	// Only override rtkEnabled from config if explicitly set
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	if _, ok := raw["rtkEnabled"]; ok {
+		rtkEnabled = cfg.RTKEnabled
+	}
+
 	cfgPassword = cfg.Password
 	now := time.Now()
 	for _, a := range cfg.Accounts {
@@ -374,81 +390,94 @@ func loadConfig() {
 		rotationMu.Unlock()
 	}
 
-	var wg sync.WaitGroup
-	for _, a := range accounts {
-		wg.Add(1)
-		go func(acc *accountState) {
-			defer wg.Done()
-			acc.mu.Lock()
-			alreadyExhausted := acc.exhausted
-			acc.mu.Unlock()
-			if alreadyExhausted {
-				return
-			}
-			creds, err := acc.getCreds()
-			if err != nil {
-				log.Printf("warn: boot refresh failed [%s]: %v", acc.cfg.Label, err)
-				return
-			}
-			quota, err := kiro.FetchQuota(creds.AccessToken, acc.cfg.ProfileArn, acc.cfg.AuthMethod)
-			if err != nil {
-				log.Printf("warn: quota check failed [%s]: %v", acc.cfg.Label, err)
-				return
-			}
-			acc.mu.Lock()
-			if quota.Limit > 0 {
-				acc.remaining = quota.Remaining
-			}
-			if quota.Exhausted {
-				acc.exhausted = true
-				acc.remaining = 0
-				acc.cfg.Exhausted = true
-				acc.cfg.ResetAt = quota.ResetAt
-				log.Printf("exhausted at boot [%s]: %d/%d reset=%s", acc.cfg.Label, quota.Used, quota.Limit, quota.ResetAt)
-			}
-			acc.mu.Unlock()
-		}(a)
-	}
-	wg.Wait()
-
 	fillActiveBatch()
 	saveConfig()
-
-	for _, a := range accounts {
-		a.refreshTokenIfNeeded()
-	}
-	saveConfig()
-
-	active := 0
-	exhausted := 0
-	suspended := 0
-	failedRefresh := 0
-	for _, a := range accounts {
-		a.mu.Lock()
-		switch {
-		case a.suspended:
-			suspended++
-		case a.failedRefresh >= 3:
-			failedRefresh++
-		case a.exhausted:
-			exhausted++
-		default:
-			active++
-		}
-		a.mu.Unlock()
-	}
-	rotationMu.Lock()
-	batchSize := 0
-	for i := 0; i < 3; i++ {
-		if activeBatch[i] != nil {
-			batchSize++
-		}
-	}
-	rotationMu.Unlock()
-
-	log.Printf("boot done: %d active, %d exhausted, %d suspended, %d invalid token, pool=%d",
-		active, exhausted, suspended, failedRefresh, batchSize)
 	close(bootReady)
+
+	go func() {
+		total := len(accounts)
+		log.Printf("bg refresh: start — %d accounts", total)
+
+		for i, a := range accounts {
+			a.mu.Lock()
+			alreadyExhausted := a.exhausted
+			a.mu.Unlock()
+			if alreadyExhausted {
+				log.Printf("[%d/%d] %s: skipped (exhausted)", i+1, total, a.cfg.Label)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			creds, err := a.getCreds()
+			if err != nil {
+				log.Printf("[%d/%d] %s: refresh failed — %v", i+1, total, a.cfg.Label, err)
+				a.markExhausted()
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			quota, err := kiro.FetchQuota(creds.AccessToken, a.cfg.ProfileArn, a.cfg.AuthMethod)
+			if err != nil {
+				log.Printf("[%d/%d] %s: quota check failed — %v", i+1, total, a.cfg.Label, err)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			a.mu.Lock()
+			if quota.Limit > 0 {
+				a.remaining = quota.Remaining
+			}
+			if quota.Exhausted {
+				a.exhausted = true
+				a.remaining = 0
+				a.cfg.Exhausted = true
+				a.cfg.ResetAt = quota.ResetAt
+				log.Printf("[%d/%d] %s: exhausted — %d/%d reset=%s", i+1, total, a.cfg.Label, quota.Used, quota.Limit, quota.ResetAt)
+			} else {
+				log.Printf("[%d/%d] %s: quota %d/%d", i+1, total, a.cfg.Label, quota.Remaining, quota.Limit)
+			}
+			a.mu.Unlock()
+			time.Sleep(1 * time.Second)
+		}
+
+		log.Printf("bg refresh: phase 1 done, refilling batch + saving")
+		fillActiveBatch()
+		saveConfig()
+
+		log.Printf("bg refresh: phase 2 — rotating old tokens")
+		for _, a := range accounts {
+			a.refreshTokenIfNeeded()
+			time.Sleep(1 * time.Second)
+		}
+		saveConfig()
+
+		active := 0
+		exhausted := 0
+		suspended := 0
+		failedRefresh := 0
+		for _, a := range accounts {
+			a.mu.Lock()
+			switch {
+			case a.suspended:
+				suspended++
+			case a.failedRefresh >= 3:
+				failedRefresh++
+			case a.exhausted:
+				exhausted++
+			default:
+				active++
+			}
+			a.mu.Unlock()
+		}
+		rotationMu.Lock()
+		batchSize := 0
+		for i := 0; i < 3; i++ {
+			if activeBatch[i] != nil {
+				batchSize++
+			}
+		}
+		rotationMu.Unlock()
+
+		log.Printf("bg refresh: done — %d active, %d exhausted, %d suspended, %d invalid token, pool=%d",
+			active, exhausted, suspended, failedRefresh, batchSize)
+	}()
 }
 
 func main() {
@@ -584,6 +613,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 {
 		writeJSONError(w, "missing messages", "invalid_request_error", http.StatusBadRequest)
 		return
+	}
+
+	// ── RTK: Process tool output in messages context ──
+	if rtkEnabled {
+		before := len(req.Messages)
+		messagesData := messagesToMapSlice(req.Messages)
+		messagesData = rtk.ProcessToolMessages(messagesData)
+		req.Messages = mapSliceToMessages(messagesData)
+		log.Printf("[rtk] processed %d messages (model=%s)", before, req.Model)
 	}
 
 	conversationID := r.Header.Get("X-Session-Id")
@@ -880,4 +918,38 @@ func acceptsBrotli(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// ── RTK helper functions ────────────────────────────────────────────────────
+
+func messagesToMapSlice(messages []kiro.Message) []map[string]any {
+	result := make([]map[string]any, len(messages))
+	for i, msg := range messages {
+		result[i] = map[string]any{
+			"role":         msg.Role,
+			"content":      msg.Content,
+			"tool_call_id": msg.ToolCallID,
+			"tool_calls":   msg.ToolCalls,
+		}
+	}
+	return result
+}
+
+func mapSliceToMessages(data []map[string]any) []kiro.Message {
+	result := make([]kiro.Message, len(data))
+	for i, m := range data {
+		msg := kiro.Message{}
+		if role, ok := m["role"].(string); ok {
+			msg.Role = role
+		}
+		msg.Content = m["content"]
+		if tcid, ok := m["tool_call_id"].(string); ok {
+			msg.ToolCallID = tcid
+		}
+		if tcs, ok := m["tool_calls"].([]kiro.ToolCall); ok {
+			msg.ToolCalls = tcs
+		}
+		result[i] = msg
+	}
+	return result
 }
