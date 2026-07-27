@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw, Coins, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
 
 interface AccountStatus {
   id: string;
@@ -44,8 +45,9 @@ const Quotas = () => {
         <h1 className="text-3xl font-bold">Quota Tracker</h1>
         <button
           onClick={fetchData}
-          className="border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:border-gray-600 hover:bg-gray-700"
+          className="flex items-center gap-2 border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:border-gray-600 hover:bg-gray-700"
         >
+          <RefreshCw size={16} />
           Refresh
         </button>
       </div>
@@ -56,8 +58,11 @@ const Quotas = () => {
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-4">
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Total Quota</div>
-              <div className="mt-2 text-3xl font-bold text-cyan-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Quota</div>
+                <Coins className="text-cyan-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-cyan-400">
                 {totalQuota.toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -66,24 +71,33 @@ const Quotas = () => {
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Suspended</div>
-              <div className="mt-2 text-3xl font-bold text-red-400">{suspended}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Suspended</div>
+                <XCircle className="text-red-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-red-400">{suspended}</div>
               <div className="mt-1 text-xs text-gray-500">
                 Needs attention
               </div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Active</div>
-              <div className="mt-2 text-3xl font-bold text-green-400">{active}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Active</div>
+                <CheckCircle className="text-green-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-green-400">{active}</div>
               <div className="mt-1 text-xs text-gray-500">
                 {accounts.length > 0 ? Math.round((active / accounts.length) * 100) : 0}%
               </div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Exhausted</div>
-              <div className="mt-2 text-3xl font-bold text-yellow-400">{exhausted}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Exhausted</div>
+                <AlertTriangle className="text-yellow-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-yellow-400">{exhausted}</div>
               <div className="mt-1 text-xs text-gray-500">
                 Waiting for reset
               </div>

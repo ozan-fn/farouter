@@ -9,6 +9,12 @@ export default defineConfig({
     pluginReact({ reactCompiler: true }),
     pluginTailwindcss(),
   ],
+  html: {
+    title: 'farouter - AI Router Dashboard',
+    meta: {
+      description: 'High-performance AI router for Kiro with intelligent account rotation, quota tracking, and built-in monitoring dashboard',
+    },
+  },
   server: {
     proxy: {
       '/api': { target: 'http://localhost:20180', changeOrigin: true },

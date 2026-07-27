@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Coins, Users, ArrowUpRight, ArrowDownRight, Activity, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
 
 interface AccountStatus {
   id: string;
@@ -101,8 +102,11 @@ const Dashboard = () => {
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
-              <div className="text-sm text-gray-400">Quota Available</div>
-              <div className="mt-2 text-3xl font-bold text-cyan-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Quota Available</div>
+                <Coins className="text-cyan-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-cyan-400">
                 {totalQuota.toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -111,14 +115,20 @@ const Dashboard = () => {
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
-              <div className="text-sm text-gray-400">Pool Status</div>
-              <div className="mt-2 text-3xl font-bold text-green-400">{poolSize} / 3</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Pool Status</div>
+                <Users className="text-green-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-green-400">{poolSize} / 3</div>
               <div className="mt-1 text-xs text-gray-500">Active rotation</div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
-              <div className="text-sm text-gray-400">Total Requests</div>
-              <div className="mt-2 text-3xl font-bold text-blue-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Requests</div>
+                <Activity className="text-blue-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-blue-400">
                 {stats ? stats.requestCount.toLocaleString() : '0'}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -127,8 +137,14 @@ const Dashboard = () => {
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
-              <div className="text-sm text-gray-400">Total Tokens</div>
-              <div className="mt-2 text-3xl font-bold text-purple-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Tokens</div>
+                <div className="flex gap-1">
+                  <ArrowUpRight className="text-purple-400" size={16} />
+                  <ArrowDownRight className="text-purple-400" size={16} />
+                </div>
+              </div>
+              <div className="text-3xl font-bold text-purple-400">
                 {totalTokens.toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -140,7 +156,10 @@ const Dashboard = () => {
           <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-400">Active</div>
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <CheckCircle size={16} className="text-green-400" />
+                  Active
+                </div>
                 <div className="text-2xl font-bold text-green-400">{active}</div>
               </div>
               <div className="mt-2 h-2 bg-gray-700">
@@ -153,7 +172,10 @@ const Dashboard = () => {
 
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-400">Exhausted</div>
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <AlertCircle size={16} className="text-yellow-400" />
+                  Exhausted
+                </div>
                 <div className="text-2xl font-bold text-yellow-400">{exhausted}</div>
               </div>
               <div className="mt-2 h-2 bg-gray-700">
@@ -166,7 +188,10 @@ const Dashboard = () => {
 
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-400">Suspended</div>
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <XCircle size={16} className="text-red-400" />
+                  Suspended
+                </div>
                 <div className="text-2xl font-bold text-red-400">{suspended}</div>
               </div>
               <div className="mt-2 h-2 bg-gray-700">

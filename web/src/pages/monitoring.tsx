@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw, Heart, CheckCircle, AlertTriangle, XCircle, Info } from 'lucide-react';
 
 interface AccountStatus {
   id: string;
@@ -77,18 +78,20 @@ const Monitoring = () => {
         <div className="flex gap-2">
           <button
             onClick={() => setAutoRefresh(!autoRefresh)}
-            className={`border px-4 py-2 text-sm transition ${
+            className={`flex items-center gap-2 border px-4 py-2 text-sm transition ${
               autoRefresh
                 ? 'border-cyan-500 bg-cyan-500/20 text-cyan-400'
                 : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600'
             }`}
           >
+            <Heart size={16} />
             Auto-refresh {autoRefresh ? 'ON' : 'OFF'}
           </button>
           <button
             onClick={fetchData}
-            className="border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:border-gray-600 hover:bg-gray-700"
+            className="flex items-center gap-2 border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:border-gray-600 hover:bg-gray-700"
           >
+            <RefreshCw size={16} />
             Refresh Now
           </button>
         </div>
@@ -194,19 +197,19 @@ const Monitoring = () => {
               )}
               {logs.map((log, i) => {
                 let typeColor = 'text-gray-400';
-                let typeIcon = '●';
+                let TypeIcon = Info;
                 if (log.type === 'error') {
                   typeColor = 'text-red-400';
-                  typeIcon = '✕';
+                  TypeIcon = XCircle;
                 } else if (log.type === 'warning') {
                   typeColor = 'text-yellow-400';
-                  typeIcon = '⚠';
+                  TypeIcon = AlertTriangle;
                 } else if (log.type === 'success') {
                   typeColor = 'text-green-400';
-                  typeIcon = '✓';
+                  TypeIcon = CheckCircle;
                 } else if (log.type === 'info') {
                   typeColor = 'text-cyan-400';
-                  typeIcon = 'ℹ';
+                  TypeIcon = Info;
                 }
 
                 return (
@@ -214,7 +217,7 @@ const Monitoring = () => {
                     key={i}
                     className="flex items-start gap-3 border-b border-gray-800 pb-2 last:border-0"
                   >
-                    <span className={`text-sm ${typeColor}`}>{typeIcon}</span>
+                    <TypeIcon size={16} className={typeColor} />
                     <div className="flex-1">
                       <div className="text-sm text-gray-300">{log.message}</div>
                       <div className="mt-1 text-xs text-gray-500">

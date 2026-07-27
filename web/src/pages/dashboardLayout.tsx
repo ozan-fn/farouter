@@ -1,11 +1,12 @@
 import { Outlet, Link, useLocation } from 'react-router';
+import { LayoutDashboard, Gauge, BarChart3, Activity, Settings } from 'lucide-react';
 
 const navLinks = [
-  { label: 'Overview', path: '/dashboard' },
-  { label: 'Quotas', path: '/dashboard/quotas' },
-  { label: 'Analytics', path: '/dashboard/analytics' },
-  { label: 'Monitoring', path: '/dashboard/monitoring' },
-  { label: 'Settings', path: '/dashboard/settings' },
+  { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'Quotas', path: '/dashboard/quotas', icon: Gauge },
+  { label: 'Analytics', path: '/dashboard/analytics', icon: BarChart3 },
+  { label: 'Monitoring', path: '/dashboard/monitoring', icon: Activity },
+  { label: 'Settings', path: '/dashboard/settings', icon: Settings },
 ];
 
 const DashboardLayout = () => {
@@ -18,16 +19,18 @@ const DashboardLayout = () => {
         <nav className="space-y-1">
           {navLinks.map((l) => {
             const isActive = location.pathname === l.path;
+            const Icon = l.icon;
             return (
               <Link
                 key={l.path}
                 to={l.path}
-                className={`block px-3 py-2 text-sm transition ${
+                className={`flex items-center gap-3 px-3 py-2 text-sm transition ${
                   isActive
                     ? 'bg-cyan-500/20 text-cyan-400 border-l-2 border-cyan-500'
                     : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
               >
+                <Icon size={18} />
                 {l.label}
               </Link>
             );

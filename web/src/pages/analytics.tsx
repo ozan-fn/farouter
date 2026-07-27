@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RefreshCw, Users, Server, TrendingUp, ArrowUpRight, Activity, BarChart3 } from 'lucide-react';
 
 interface AccountStatus {
   id: string;
@@ -82,8 +83,9 @@ const Analytics = () => {
         <h1 className="text-3xl font-bold">Analytics</h1>
         <button
           onClick={fetchData}
-          className="border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:border-gray-600 hover:bg-gray-700"
+          className="flex items-center gap-2 border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:border-gray-600 hover:bg-gray-700"
         >
+          <RefreshCw size={16} />
           Refresh
         </button>
       </div>
@@ -94,24 +96,33 @@ const Analytics = () => {
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Total Requests</div>
-              <div className="mt-2 text-3xl font-bold text-cyan-400">{totalRequests.toLocaleString()}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Requests</div>
+                <Activity className="text-cyan-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-cyan-400">{totalRequests.toLocaleString()}</div>
               <div className="mt-1 text-xs text-gray-500">
                 {totalFailed} failed
               </div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Tokens Used</div>
-              <div className="mt-2 text-3xl font-bold text-blue-400">{totalTokensUsed.toLocaleString()}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Tokens Used</div>
+                <ArrowUpRight className="text-blue-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-blue-400">{totalTokensUsed.toLocaleString()}</div>
               <div className="mt-1 text-xs text-gray-500">
                 Input tokens
               </div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Tokens Generated</div>
-              <div className="mt-2 text-3xl font-bold text-green-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Tokens Generated</div>
+                <TrendingUp className="text-green-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-green-400">
                 {totalTokensGenerated.toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -120,8 +131,14 @@ const Analytics = () => {
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Total Tokens</div>
-              <div className="mt-2 text-3xl font-bold text-purple-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Tokens</div>
+                <div className="flex gap-1">
+                  <ArrowUpRight className="text-purple-400" size={16} />
+                  <TrendingUp className="text-purple-400" size={16} />
+                </div>
+              </div>
+              <div className="text-3xl font-bold text-purple-400">
                 {(totalTokensUsed + totalTokensGenerated).toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -132,24 +149,33 @@ const Analytics = () => {
 
           <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Total Accounts</div>
-              <div className="mt-2 text-2xl font-bold text-cyan-400">{totalAccounts}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Accounts</div>
+                <Users className="text-cyan-400" size={20} />
+              </div>
+              <div className="text-2xl font-bold text-cyan-400">{totalAccounts}</div>
               <div className="mt-1 text-xs text-gray-500">
                 {activeAccounts.length} active
               </div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Pool Size</div>
-              <div className="mt-2 text-2xl font-bold text-blue-400">{poolAccounts.length}</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Pool Size</div>
+                <Server className="text-blue-400" size={20} />
+              </div>
+              <div className="text-2xl font-bold text-blue-400">{poolAccounts.length}</div>
               <div className="mt-1 text-xs text-gray-500">
                 In rotation
               </div>
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Total Remaining</div>
-              <div className="mt-2 text-2xl font-bold text-green-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Total Remaining</div>
+                <TrendingUp className="text-green-400" size={20} />
+              </div>
+              <div className="text-2xl font-bold text-green-400">
                 {totalRemaining.toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
@@ -158,8 +184,11 @@ const Analytics = () => {
             </div>
 
             <div className="border border-gray-700 bg-gray-800/40 p-6">
-              <div className="text-sm text-gray-400">Avg per Account</div>
-              <div className="mt-2 text-2xl font-bold text-purple-400">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Avg per Account</div>
+                <BarChart3 className="text-purple-400" size={20} />
+              </div>
+              <div className="text-2xl font-bold text-purple-400">
                 {avgRemaining.toLocaleString()}
               </div>
               <div className="mt-1 text-xs text-gray-500">
