@@ -25,6 +25,7 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 	currentMsg := result.currentMessage
 	toolDocs := result.toolDocs
 	toolsAttached := result.toolsAttached
+	userSystemContent := result.systemContent
 
 	if len(req.Tools) > 0 {
 		reconcileOrphanedToolResults(history, currentMsg)
@@ -48,9 +49,12 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 	kiroEffort := applyThinkingAllowlist(rawEffort, upstreamModel)
 
 	var systemPromptParts []string
-	if rawEffort != "" {
-		effortLength := ThinkingLengthForEffort(rawEffort)
+	if kiroEffort != "" {
+		effortLength := ThinkingLengthForEffort(kiroEffort)
 		systemPromptParts = append(systemPromptParts, BuildThinkingSystemPrefix(effortLength))
+	}
+	if userSystemContent != "" {
+		systemPromptParts = append(systemPromptParts, userSystemContent)
 	}
 	if resolved.Agentic {
 		systemPromptParts = append(systemPromptParts, AgenticSystemPrompt)
@@ -271,6 +275,7 @@ func synthesizeMinimalTools(tools []Tool, history []map[string]any) []any {
 type convertResult struct {
 	history        []map[string]any
 	currentMessage map[string]any
+	systemContent  string
 	toolDocs       string
 	toolsAttached  bool
 }
@@ -292,6 +297,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	var pendingToolResults []any
 	var pendingImages []map[string]any
 	var toolDocsParts []string
+	var pendingSystemContent []string
 	currentRole := ""
 	toolsInjected := false
 
@@ -344,8 +350,14 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 
 	for _, msg := range messages {
 		role := msg.Role
-		wasSystem := role == "system"
-		if role == "system" || role == "tool" {
+		if role == "system" {
+			content, _, _ := extractUserContent(msg.Content, false)
+			if content != "" {
+				pendingSystemContent = append(pendingSystemContent, content)
+			}
+			continue
+		}
+		if role == "tool" {
 			role = "user"
 		}
 
@@ -367,9 +379,6 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 				pendingImages = append(pendingImages, images...)
 				pendingToolResults = append(pendingToolResults, toolResults...)
 				if content != "" {
-					if wasSystem {
-						content = wrapSystemReminder(content)
-					}
 					pendingUserContent = append(pendingUserContent, content)
 				}
 			}
@@ -442,6 +451,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	return convertResult{
 		history:        alternating,
 		currentMessage: currentMessage,
+		systemContent:  strings.Join(pendingSystemContent, "\n\n"),
 		toolDocs:       strings.Join(toolDocsParts, "\n\n---\n\n"),
 		toolsAttached:  toolsInjected,
 	}

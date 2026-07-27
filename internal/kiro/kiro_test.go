@@ -645,7 +645,7 @@ func TestBuildKiroRequestEmptyConversationID(t *testing.T) {
 	}
 
 	resolved := ResolvedModel{Upstream: "claude-sonnet-4.5"}
-	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "")
+	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "", "")
 	if err != nil {
 		t.Fatalf("buildKiroRequest: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestBuildKiroRequestEmptyConversationID(t *testing.T) {
 		t.Error("conversationId is empty, should be generated UUIDv5")
 	}
 
-	payload2, _ := buildKiroRequest(req, resolved, "arn:aws:test", "")
+	payload2, _ := buildKiroRequest(req, resolved, "arn:aws:test", "", "")
 	var parsed2 map[string]any
 	json.Unmarshal(payload2, &parsed2)
 	cid2 := parsed2["conversationState"].(map[string]any)["conversationId"].(string)
@@ -673,7 +673,7 @@ func TestBuildKiroRequestEmptyConversationID(t *testing.T) {
 		Model:    "claude-sonnet-4.5",
 		Messages: []Message{{Role: "user", Content: "different message"}},
 	}
-	payload3, _ := buildKiroRequest(req2, resolved, "arn:aws:test", "")
+	payload3, _ := buildKiroRequest(req2, resolved, "arn:aws:test", "", "")
 	var parsed3 map[string]any
 	json.Unmarshal(payload3, &parsed3)
 	cid3 := parsed3["conversationState"].(map[string]any)["conversationId"].(string)
@@ -689,7 +689,7 @@ func TestBuildKiroRequestProvidedConversationID(t *testing.T) {
 	}
 
 	resolved := ResolvedModel{Upstream: "claude-sonnet-4.5"}
-	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "my-custom-id")
+	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "my-custom-id", "")
 	if err != nil {
 		t.Fatalf("buildKiroRequest: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestBuildKiroRequestHistoryIsSlice(t *testing.T) {
 	}
 
 	resolved := ResolvedModel{Upstream: "claude-sonnet-4.5"}
-	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "test-id")
+	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "test-id", "")
 	if err != nil {
 		t.Fatalf("buildKiroRequest: %v", err)
 	}

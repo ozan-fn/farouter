@@ -39,13 +39,13 @@ const Settings = () => {
       ) : (
         <div className="space-y-4">
           {/* Server info */}
-          <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 transition hover:border-gray-700">
+          <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
             <h2 className="mb-1 text-sm font-semibold text-gray-300">Server</h2>
             <p className="text-sm text-gray-500">farouter · port 20180</p>
           </div>
 
           {/* RTK toggle */}
-          <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 transition hover:border-gray-700">
+          <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-gray-300">
@@ -65,12 +65,12 @@ const Settings = () => {
               <button
                 onClick={() => toggleRTK(!rtkEnabled)}
                 disabled={toggling}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-900 ${
+                className={`relative inline-flex h-6 w-11 items-center transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-900 ${
                   rtkEnabled ? 'bg-cyan-500' : 'bg-gray-600'
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  className={`inline-block h-4 w-4 transform bg-white transition-transform ${
                     rtkEnabled ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
@@ -83,7 +83,7 @@ const Settings = () => {
           </div>
 
           {/* Theme */}
-          <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 transition hover:border-gray-700">
+          <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
             <h2 className="mb-1 text-sm font-semibold text-gray-300">Theme</h2>
             <p className="text-sm text-gray-500">Dark mode only</p>
           </div>

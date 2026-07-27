@@ -8,14 +8,14 @@ const navLinks = [
 const DashboardLayout = () => {
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100">
-      <aside className="fixed left-0 top-0 h-screen w-56 border-r border-gray-800 bg-gray-900 p-4">
+      <aside className="fixed left-0 top-0 h-screen w-56 border-r border-gray-800 bg-gray-900/40 p-4">
         <h2 className="mb-6 text-lg font-bold text-cyan-400">farouter</h2>
         <nav className="space-y-1">
           {navLinks.map((l) => (
             <Link
               key={l.path}
               to={l.path}
-              className="block rounded px-3 py-2 text-sm text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+              className="block px-3 py-2 text-sm text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
             >
               {l.label}
             </Link>
@@ -23,7 +23,7 @@ const DashboardLayout = () => {
         </nav>
       </aside>
 
-      <header className="fixed left-56 right-0 top-0 z-10 border-b border-gray-800 bg-gray-900/80 px-6 py-3 backdrop-blur">
+      <header className="fixed left-56 right-0 top-0 z-10 border-b border-gray-800 bg-gray-900/60 px-6 py-3 backdrop-blur">
         <div className="flex items-center justify-between">
           <span className="text-sm text-gray-400">Dashboard</span>
         </div>
