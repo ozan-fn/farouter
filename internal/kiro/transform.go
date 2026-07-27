@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	maxContentLength  = 400000
 	toolDescThreshold = 10000
 	namespaceKiro     = "34f7193f-561d-4050-bc84-9547d953d6bf"
 )
@@ -170,9 +169,6 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 
 	if currentMsg != nil {
 		if uim, ok := currentMsg["userInputMessage"].(map[string]any); ok {
-			if content, ok := uim["content"].(string); ok && len(content) > maxContentLength {
-				uim["content"] = content[:maxContentLength] + "\n... [truncated]"
-			}
 			if !toolsAttached && len(req.Tools) > 0 {
 				if ctx, _ := uim["userInputMessageContext"].(map[string]any); ctx == nil || ctx["tools"] == nil {
 					synthesized := synthesizeMinimalTools(req.Tools, history)

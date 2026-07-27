@@ -13,11 +13,29 @@ import (
 	"farouter/internal/rtk"
 )
 
-const (
-	maxRetries        = 2
-	retryDelayMs      = 2000
-	intraRetryDelayMs = 2000
-)
+// RetryConfig mirrors vansrouter's DEFAULT_RETRY_CONFIG pattern.
+// Per-status-code retry: {attempts, delayMs}. Zero attempts = no retry (fallback only).
+type RetryConfigEntry struct {
+	Attempts int
+	DelayMs  int
+}
+
+var defaultRetryConfig = map[int]RetryConfigEntry{
+	429: {Attempts: 0, DelayMs: 0},       // no per-URL retry, just fallback to next URL
+	502: {Attempts: 3, DelayMs: 3000},     // retry same URL up to 3x with 3s delay
+	503: {Attempts: 3, DelayMs: 2000},     // retry same URL up to 3x with 2s delay
+	504: {Attempts: 2, DelayMs: 3000},     // retry same URL up to 2x with 3s delay
+}
+
+func resolveRetryEntry(entry RetryConfigEntry) (attempts int, delayMs int) {
+	if entry.Attempts <= 0 {
+		return 0, 2000
+	}
+	if entry.DelayMs <= 0 {
+		return entry.Attempts, 2000
+	}
+	return entry.Attempts, entry.DelayMs
+}
 
 func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID, connectionID string, rtkEnabled bool) error {
 	resolved := ResolveModel(req.Model)
@@ -53,21 +71,51 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 		kiroBody = rtk.ProcessKiroBody(kiroBody)
 	}
 
-	filteredBody := transformRequestPayload(kiroBody)
-
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)
 	urls := GetOrderedBaseURLs(creds, region)
 
 	var lastErr error
 	var lastStatus int
-	for urlIndex, url := range urls {
-		resp, err := sendToKiroEndpoint(ctx, creds, url, filteredBody)
+	retryAttemptsByUrl := make(map[int]int)
+	for urlIndex := 0; urlIndex < len(urls); urlIndex++ {
+		url := urls[urlIndex]
+
+		resp, err := sendToKiroEndpoint(ctx, creds, url, kiroBody)
 		if err != nil {
 			lastErr = err
+			// Network error → retry same URL (matches vansrouter 502 retry pattern)
+			entry := defaultRetryConfig[502]
+			attempts, delayMs := resolveRetryEntry(entry)
+			if attempts > 0 && retryAttemptsByUrl[urlIndex] < attempts {
+				retryAttemptsByUrl[urlIndex]++
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Duration(delayMs) * time.Millisecond):
+				}
+				urlIndex--
+				continue
+			}
 			if urlIndex+1 < len(urls) {
 				continue
 			}
 			return fmt.Errorf("kiro: all %d endpoints failed: %w", len(urls), lastErr)
+		}
+
+		// Per-status retry (matches vansrouter tryRetry pattern)
+		if entry, ok := defaultRetryConfig[resp.StatusCode]; ok {
+			attempts, delayMs := resolveRetryEntry(entry)
+			if attempts > 0 && retryAttemptsByUrl[urlIndex] < attempts {
+				resp.Body.Close()
+				retryAttemptsByUrl[urlIndex]++
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Duration(delayMs) * time.Millisecond):
+				}
+				urlIndex--
+				continue
+			}
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -202,11 +250,10 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 		kiroBody = rtk.ProcessKiroBody(kiroBody)
 	}
 
-	filteredBody := transformRequestPayload(kiroBody)
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)
 	urls := GetOrderedBaseURLs(creds, region)
 
-	result := doIntegrityAttemptWithFallback(ctx, creds, urls, filteredBody, resolved.Upstream, resolved.Thinking)
+	result := doIntegrityAttemptWithFallback(ctx, creds, urls, kiroBody, resolved.Upstream, resolved.Thinking)
 	if result.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result.Bytes, resolved.Upstream)
 		return nil
@@ -233,7 +280,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 		return nil
 	}
 	
-	repairedBody := appendRepairInstruction(filteredBody, repairKind)
+	repairedBody := appendRepairInstruction(kiroBody, repairKind)
 	
 	// Start heartbeat during repair to keep connection alive
 	heartbeatStop := make(chan struct{})
@@ -324,16 +371,48 @@ func writeIntegritySSE(w http.ResponseWriter, data []byte) {
 
 func doIntegrityAttemptWithFallback(ctx context.Context, creds Credentials, urls []string, body []byte, model string, thinkingEnabled bool) *IntegrityResult {
 	var lastErr error
-	for urlIndex, url := range urls {
+	retryAttemptsByUrl := make(map[int]int)
+	for urlIndex := 0; urlIndex < len(urls); urlIndex++ {
+		url := urls[urlIndex]
+
 		resp, err := sendToKiroEndpoint(ctx, creds, url, body)
 		if err != nil {
 			lastErr = err
+			// Network error → retry same URL (matches vansrouter 502 retry pattern)
+			entry := defaultRetryConfig[502]
+			attempts, delayMs := resolveRetryEntry(entry)
+			if attempts > 0 && retryAttemptsByUrl[urlIndex] < attempts {
+				retryAttemptsByUrl[urlIndex]++
+				select {
+				case <-ctx.Done():
+					return &IntegrityResult{Kind: IntegrityAccountError, Message: ctx.Err().Error()}
+				case <-time.After(time.Duration(delayMs) * time.Millisecond):
+				}
+				urlIndex--
+				continue
+			}
 			if urlIndex+1 < len(urls) {
 				continue
 			}
 			return &IntegrityResult{
 				Kind:    IntegrityAccountError,
 				Message: fmt.Sprintf("all %d endpoints failed: %v", len(urls), lastErr),
+			}
+		}
+
+		// Per-status retry (matches vansrouter tryRetry pattern)
+		if entry, ok := defaultRetryConfig[resp.StatusCode]; ok {
+			attempts, delayMs := resolveRetryEntry(entry)
+			if attempts > 0 && retryAttemptsByUrl[urlIndex] < attempts {
+				resp.Body.Close()
+				retryAttemptsByUrl[urlIndex]++
+				select {
+				case <-ctx.Done():
+					return &IntegrityResult{Kind: IntegrityAccountError, Message: ctx.Err().Error()}
+				case <-time.After(time.Duration(delayMs) * time.Millisecond):
+				}
+				urlIndex--
+				continue
 			}
 		}
 
@@ -410,72 +489,7 @@ func processIntegrityResponse(resp *http.Response, model string, thinkingEnabled
 	return validateIntegrity(bytes.NewReader(buf.Bytes()), KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES, diagResult)
 }
 
-func transformRequestPayload(body []byte) []byte {
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
-	}
 
-	allowed := map[string]bool{
-		"conversationState":            true,
-		"profileArn":                   true,
-		"inferenceConfig":              true,
-		"additionalModelRequestFields": true,
-		"systemPrompt":                 true,
-		"agentMode":                    true,
-	}
-
-	filtered := make(map[string]any, len(allowed))
-	for k, v := range raw {
-		if allowed[k] {
-			filtered[k] = v
-		}
-	}
-
-	b, err := json.Marshal(filtered)
-	if err != nil {
-		return body
-	}
-	return b
-}
-
-func sendToKiroWithRetry(ctx context.Context, creds Credentials, url string, body []byte) (*http.Response, error) {
-	headers := BuildKiroHeaders(creds)
-
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			delay := time.Duration(intraRetryDelayMs*attempt) * time.Millisecond
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-
-		resp, err := getHttpClient().Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode == http.StatusTooManyRequests {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("429 from %s", url)
-			continue
-		}
-		return resp, nil
-	}
-	return nil, fmt.Errorf("kiro endpoint %s failed after %d retries: %w", url, maxRetries, lastErr)
-}
 
 func sendToKiroEndpoint(ctx context.Context, creds Credentials, url string, body []byte) (*http.Response, error) {
 	headers := BuildKiroHeaders(creds)
