@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
+import { Copy, Check } from 'lucide-react';
 
 const Settings = () => {
   const [rtkEnabled, setRtkEnabled] = useState(true);
   const [toggling, setToggling] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [baseURL, setBaseURL] = useState('http://localhost:20180');
+  const [apiKey, setApiKey] = useState('');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     fetch('/api/rtk')
@@ -13,6 +17,8 @@ const Settings = () => {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+    
+    setBaseURL(window.location.origin);
   }, []);
 
   const toggleRTK = async (val: boolean) => {
@@ -28,6 +34,36 @@ const Settings = () => {
     } finally {
       setToggling(false);
     }
+  };
+
+  const generateConfig = () => {
+    return JSON.stringify({
+      "$schema": "https://opencode.ai/config.json",
+      "lsp": true,
+      "provider": {
+        "Kafuu": {
+          "models": {
+            "kr/auto": { "name": "Auto", "limit": { "context": 200000, "output": 65536 } },
+            "kr/auto-thinking": { "name": "Auto Thinking", "reasoning": true, "limit": { "context": 200000, "output": 65536 } },
+            "kr/claude-haiku-4.5": { "name": "Claude Haiku 4.5", "limit": { "context": 200000, "output": 65536 } },
+            "kr/claude-haiku-4.5-thinking": { "name": "Claude Haiku 4.5 Thinking", "reasoning": true, "limit": { "context": 200000, "output": 65536 } },
+            "kr/claude-sonnet-4.5": { "name": "Claude Sonnet 4.5", "limit": { "context": 200000, "output": 65536 } },
+            "kr/claude-sonnet-4.5-thinking": { "name": "Claude Sonnet 4.5 Thinking", "reasoning": true, "limit": { "context": 200000, "output": 65536 } }
+          },
+          "npm": "@ai-sdk/openai-compatible",
+          "options": {
+            "apiKey": apiKey || "your-api-key-here",
+            "baseURL": `${baseURL}/v1`
+          }
+        }
+      }
+    }, null, 2);
+  };
+
+  const copyConfig = () => {
+    navigator.clipboard.writeText(generateConfig());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -86,6 +122,65 @@ const Settings = () => {
           <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
             <h2 className="mb-1 text-sm font-semibold text-gray-300">Theme</h2>
             <p className="text-sm text-gray-500">Dark mode only</p>
+          </div>
+
+          <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
+            <h2 className="mb-3 text-sm font-semibold text-gray-300">OpenCode Configuration</h2>
+            <p className="mb-2 text-xs text-gray-500">
+              Generate OpenCode config to use farouter as your AI provider
+            </p>
+            <p className="mb-4 text-xs text-gray-400">
+              Path: <code className="bg-gray-950 px-1 py-0.5 text-cyan-400">~/.config/opencode/opencode.json</code>
+            </p>
+            
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">Base URL</label>
+                <input
+                  type="text"
+                  value={baseURL}
+                  onChange={(e) => setBaseURL(e.target.value)}
+                  className="w-full border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-cyan-500 focus:outline-none"
+                  placeholder="http://localhost:20180"
+                />
+              </div>
+              
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">API Key (optional)</label>
+                <input
+                  type="text"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  className="w-full border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-cyan-500 focus:outline-none"
+                  placeholder="your-api-key-here"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs text-gray-400">Generated Config</label>
+                <div className="relative">
+                  <pre className="overflow-x-auto border border-gray-700 bg-gray-950 p-3 text-xs text-gray-300">
+                    {generateConfig()}
+                  </pre>
+                  <button
+                    onClick={copyConfig}
+                    className="absolute right-2 top-2 flex items-center gap-1 border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 transition hover:border-cyan-500 hover:text-cyan-400"
+                  >
+                    {copied ? (
+                      <>
+                        <Check size={14} />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={14} />
+                        Copy
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
