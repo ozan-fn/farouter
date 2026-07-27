@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"farouter/internal/analytics"
 	"farouter/internal/kiro"
 
 	"github.com/go-chi/chi/v5"
@@ -47,13 +48,23 @@ type AccountConfig struct {
 	LastRefreshedAt string `json:"lastRefreshedAt,omitempty"`
 }
 
+type SessionConfig struct {
+	Token   string `json:"token"`
+	Expires string `json:"expires"`
+}
+
 type Config struct {
-	Password       string          `json:"password,omitempty"`
-	ActiveBatchIds []string        `json:"activeBatchIds,omitempty"`
-	CurrentSlot    int             `json:"currentSlot,omitempty"`
-	StickyCount    int             `json:"stickyCount,omitempty"`
-	RTKEnabled     bool            `json:"rtkEnabled"`
-	Accounts       []AccountConfig `json:"accounts"`
+	Password        string            `json:"password,omitempty"`
+	ActiveBatchIds  []string          `json:"activeBatchIds,omitempty"`
+	CurrentSlot     int               `json:"currentSlot,omitempty"`
+	StickyCount     int               `json:"stickyCount,omitempty"`
+	RTKEnabled      bool              `json:"rtkEnabled"`
+	Accounts        []AccountConfig   `json:"accounts"`
+	TokensUsed      int64             `json:"tokensUsed,omitempty"`
+	TokensGenerated int64             `json:"tokensGenerated,omitempty"`
+	RequestCount    int               `json:"requestCount,omitempty"`
+	FailedCount     int               `json:"failedCount,omitempty"`
+	Sessions        []SessionConfig   `json:"sessions,omitempty"`
 }
 
 type sessionEntry struct {
@@ -87,6 +98,7 @@ var (
 	cfgPassword   string
 	rtkEnabled    = true
 	rtkMu         sync.RWMutex
+	analyticsData *analytics.Analytics
 )
 
 func (a *accountState) getCreds() (kiro.Credentials, error) {
@@ -140,6 +152,9 @@ func (a *accountState) markExhausted() {
 	a.remaining = 0
 	a.cfg.Exhausted = true
 	a.mu.Unlock()
+	if analyticsData != nil {
+		go analyticsData.AddLog("Account exhausted: "+a.cfg.Label, "warning", a.cfg.ID)
+	}
 }
 
 func (a *accountState) markSuspended() {
@@ -150,13 +165,20 @@ func (a *accountState) markSuspended() {
 	a.cfg.Suspended = true
 	a.cfg.Exhausted = true
 	a.mu.Unlock()
+	if analyticsData != nil {
+		go analyticsData.AddLog("Account suspended: "+a.cfg.Label, "error", a.cfg.ID)
+	}
 }
 
 func (a *accountState) reset() {
 	a.mu.Lock()
+	wasExhausted := a.exhausted
 	a.remaining = tokenLimit
 	a.exhausted = false
 	a.mu.Unlock()
+	if wasExhausted && analyticsData != nil {
+		go analyticsData.AddLog("Account reactivated: "+a.cfg.Label, "success", a.cfg.ID)
+	}
 }
 
 func (a *accountState) available() bool {
@@ -334,6 +356,23 @@ func saveConfig() {
 		Password:   cfgPassword,
 		RTKEnabled: rtkVal,
 	}
+	
+	if analyticsData != nil {
+		stats := analyticsData.GetStats()
+		if tokensUsed, ok := stats["tokensUsed"].(int64); ok {
+			cfg.TokensUsed = tokensUsed
+		}
+		if tokensGen, ok := stats["tokensGenerated"].(int64); ok {
+			cfg.TokensGenerated = tokensGen
+		}
+		if reqCount, ok := stats["requestCount"].(int); ok {
+			cfg.RequestCount = reqCount
+		}
+		if failCount, ok := stats["failedCount"].(int); ok {
+			cfg.FailedCount = failCount
+		}
+	}
+	
 	rotationMu.Lock()
 	cfg.CurrentSlot = currentSlot
 	cfg.StickyCount = stickyCount
@@ -351,6 +390,16 @@ func saveConfig() {
 		a.mu.Unlock()
 		cfg.Accounts = append(cfg.Accounts, entry)
 	}
+	
+	sessionsMu.RLock()
+	for token, sess := range sessions {
+		cfg.Sessions = append(cfg.Sessions, SessionConfig{
+			Token:   token,
+			Expires: sess.expires.Format(time.RFC3339),
+		})
+	}
+	sessionsMu.RUnlock()
+	
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		log.Printf("saveConfig marshal: %v", err)
@@ -379,7 +428,22 @@ func loadConfig() {
 	}
 
 	cfgPassword = cfg.Password
+	
+	if analyticsData != nil && (cfg.TokensUsed > 0 || cfg.TokensGenerated > 0 || cfg.RequestCount > 0) {
+		analyticsData.LoadStats(cfg.TokensUsed, cfg.TokensGenerated, cfg.RequestCount, cfg.FailedCount)
+	}
+	
+	sessionsMu.Lock()
 	now := time.Now()
+	for _, s := range cfg.Sessions {
+		if expires, err := time.Parse(time.RFC3339, s.Expires); err == nil {
+			if now.Before(expires) {
+				sessions[s.Token] = sessionEntry{expires: expires}
+				log.Printf("restored session: %s (expires: %s)", s.Token[:8]+"...", expires.Format(time.RFC3339))
+			}
+		}
+	}
+	sessionsMu.Unlock()
 	for _, a := range cfg.Accounts {
 		if a.RefreshToken == "" {
 			continue
@@ -515,9 +579,16 @@ func loadConfig() {
 }
 
 func main() {
-	go loadConfig()
+	analyticsData = analytics.New()
+	loadConfig()
+	kiro.GlobalTokenCallback = func(inputTokens, outputTokens int64) {
+		if analyticsData != nil {
+			analyticsData.AddTokens(inputTokens, outputTokens)
+		}
+	}
 	startTokenRefreshLoop()
 	startResetWatcher()
+	startMetricsCollector()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -534,6 +605,9 @@ func main() {
 		r.Post("/api/rtk", handleRTK)
 		r.Post("/accounts/reset", handleReset)
 		r.Post("/auth/kiro/refresh", handleKiroRefresh)
+		r.Get("/api/analytics/metrics", handleMetrics)
+		r.Get("/api/analytics/logs", handleLogs)
+		r.Delete("/api/analytics/logs", handleClearLogs)
 	})
 
 	serveSPA(r, distFS, "web/dist")
@@ -589,19 +663,21 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	b := make([]byte, 32)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
+	expires := time.Now().Add(7 * 24 * time.Hour)
 
 	sessionsMu.Lock()
-	sessions[token] = sessionEntry{expires: time.Now().Add(24 * time.Hour)}
+	sessions[token] = sessionEntry{expires: expires}
 	sessionsMu.Unlock()
+	
+	go saveConfig()
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expires,
 	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": token})
@@ -677,6 +753,10 @@ func handleRTK(w http.ResponseWriter, r *http.Request) {
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	<-bootReady
+	
+	if analyticsData != nil {
+		analyticsData.IncrementRequests()
+	}
 
 	var req kiro.ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -823,20 +903,25 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		log.Printf("execute error [%s]: %v", acc.cfg.Label, err)
+		if analyticsData != nil {
+			analyticsData.IncrementFailed()
+		}
 		return
 	}
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	type entry struct {
-		ID        string `json:"id"`
-		Label     string `json:"label"`
-		Remaining int    `json:"remaining"`
-		Exhausted bool   `json:"exhausted"`
-		Suspended bool   `json:"suspended"`
-		ResetAt   string `json:"resetAt"`
-		HasToken  bool   `json:"hasToken"`
-		InPool    bool   `json:"inPool"`
+		ID         string `json:"id"`
+		Label      string `json:"label"`
+		Remaining  int    `json:"remaining"`
+		Exhausted  bool   `json:"exhausted"`
+		Suspended  bool   `json:"suspended"`
+		ResetAt    string `json:"resetAt"`
+		HasToken   bool   `json:"hasToken"`
+		InPool     bool   `json:"inPool"`
+		AuthMethod string `json:"authMethod,omitempty"`
+		Region     string `json:"region,omitempty"`
 	}
 	rotationMu.Lock()
 	batchSet := make(map[*accountState]bool)
@@ -851,14 +936,16 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, a := range accounts {
 		a.mu.Lock()
 		out = append(out, entry{
-			ID:        a.cfg.ID,
-			Label:     a.cfg.Label,
-			Remaining: a.remaining,
-			Exhausted: a.exhausted,
-			Suspended: a.suspended,
-			ResetAt:   a.cfg.ResetAt,
-			HasToken:  a.accessToken != "",
-			InPool:    batchSet[a],
+			ID:         a.cfg.ID,
+			Label:      a.cfg.Label,
+			Remaining:  a.remaining,
+			Exhausted:  a.exhausted,
+			Suspended:  a.suspended,
+			ResetAt:    a.cfg.ResetAt,
+			HasToken:   a.accessToken != "",
+			InPool:     batchSet[a],
+			AuthMethod: a.cfg.AuthMethod,
+			Region:     a.cfg.ProfileArn,
 		})
 		a.mu.Unlock()
 	}
@@ -1025,6 +1112,62 @@ func acceptsBrotli(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func startMetricsCollector() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			active := 0
+			exhausted := 0
+			suspended := 0
+			totalRemaining := 0
+
+			for _, a := range accounts {
+				a.mu.Lock()
+				if a.suspended {
+					suspended++
+				} else if a.exhausted {
+					exhausted++
+				} else {
+					active++
+				}
+				totalRemaining += a.remaining
+				a.mu.Unlock()
+			}
+
+			rotationMu.Lock()
+			poolSize := 0
+			for i := 0; i < 3; i++ {
+				if activeBatch[i] != nil {
+					poolSize++
+				}
+			}
+			rotationMu.Unlock()
+
+			analyticsData.RecordMetric(active, exhausted, suspended, totalRemaining, poolSize)
+		}
+	}()
+}
+
+func handleMetrics(w http.ResponseWriter, r *http.Request) {
+	metrics := analyticsData.GetMetrics()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics)
+}
+
+func handleLogs(w http.ResponseWriter, r *http.Request) {
+	logs := analyticsData.GetLogs()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(logs)
+}
+
+func handleClearLogs(w http.ResponseWriter, r *http.Request) {
+	analyticsData.ClearLogs()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 }
 
 

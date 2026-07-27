@@ -3,6 +3,9 @@ import { createBrowserRouter, redirect } from 'react-router';
 import Login, { loader as loginLoader } from '../pages/login';
 import DashboardLayout from '../pages/dashboardLayout';
 import Dashboard from '../pages/dashboard';
+import Quotas from '../pages/quotas';
+import Analytics from '../pages/analytics';
+import Monitoring from '../pages/monitoring';
 import Settings from '../pages/settings';
 import NotFound from '../pages/notFound';
 
@@ -20,6 +23,9 @@ export const router = createBrowserRouter([
     loader: authLoader,
     children: [
       { index: true, Component: Dashboard },
+      { path: 'quotas', Component: Quotas },
+      { path: 'analytics', Component: Analytics },
+      { path: 'monitoring', Component: Monitoring },
       { path: 'settings', Component: Settings },
     ],
   },

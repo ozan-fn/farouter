@@ -193,6 +193,13 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 			usage := extractUsageFromChunk(parsed)
 			if usage != nil {
 				state.usage = mergeUsage(state.usage, usage)
+				if GlobalTokenCallback != nil && usage != nil {
+					if prompt, ok := usage["prompt_tokens"].(int); ok {
+						if completion, ok := usage["completion_tokens"].(int); ok {
+							GlobalTokenCallback(int64(prompt), int64(completion))
+						}
+					}
+				}
 			}
 
 			finishReason, _ := parsed["choices"].([]any)

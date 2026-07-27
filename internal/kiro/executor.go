@@ -37,6 +37,10 @@ func resolveRetryEntry(entry RetryConfigEntry) (attempts int, delayMs int) {
 	return entry.Attempts, entry.DelayMs
 }
 
+type TokenUsageCallback func(inputTokens, outputTokens int64)
+
+var GlobalTokenCallback TokenUsageCallback
+
 func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID, connectionID string, rtkEnabled bool) error {
 	resolved := ResolveModel(req.Model)
 
