@@ -52,7 +52,7 @@ type Config struct {
 	ActiveBatchIds []string        `json:"activeBatchIds,omitempty"`
 	CurrentSlot    int             `json:"currentSlot,omitempty"`
 	StickyCount    int             `json:"stickyCount,omitempty"`
-	RTKEnabled     bool            `json:"rtkEnabled,omitempty"`
+	RTKEnabled     bool            `json:"rtkEnabled"`
 	Accounts       []AccountConfig `json:"accounts"`
 }
 
