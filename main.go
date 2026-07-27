@@ -346,6 +346,35 @@ func pickAccount() *accountState {
 	return nil
 }
 
+func getNextAvailableAccount() *accountState {
+	rotationMu.Lock()
+	defer rotationMu.Unlock()
+	
+	if len(standbyQueue) > 0 {
+		acc := standbyQueue[0]
+		standbyQueue = standbyQueue[1:]
+		return acc
+	}
+	
+	for _, a := range accounts {
+		if !a.available() {
+			continue
+		}
+		inPool := false
+		for i := 0; i < 3; i++ {
+			if activeBatch[i] == a {
+				inPool = true
+				break
+			}
+		}
+		if !inPool {
+			return a
+		}
+	}
+	
+	return nil
+}
+
 func saveConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
@@ -810,10 +839,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	exhaustRetries := 0
 	credsErrCount := 0
 	resetDone := false
-	for {
+	for attempt := 0; attempt < 10; attempt++ {
 		acc := pickAccount()
 		if acc == nil {
 			if !resetDone {
@@ -825,8 +853,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				fillActiveBatch()
-				exhaustRetries = 0
 				credsErrCount = 0
+				attempt = 0
 				continue
 			}
 			writeJSONError(w, "all accounts exhausted", "service_unavailable", http.StatusServiceUnavailable)
@@ -862,37 +890,28 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if errors.Is(err, kiro.ErrExhausted) {
-			log.Printf("account exhausted [%s]", acc.cfg.Label)
+			log.Printf("account exhausted [%s], replacing immediately", acc.cfg.Label)
 			acc.markExhausted()
-			// Refill this slot from standby, reset sticky count for replacement
-			rotationMu.Lock()
-			replaced := false
-			for i := 0; i < 3; i++ {
-				if activeBatch[i] == acc {
-					if len(standbyQueue) > 0 {
-						activeBatch[i] = standbyQueue[0]
-						standbyQueue = standbyQueue[1:]
-						replaced = true
-					} else {
-						activeBatch[i] = nil
+			
+			replacement := getNextAvailableAccount()
+			if replacement != nil {
+				rotationMu.Lock()
+				for i := 0; i < 3; i++ {
+					if activeBatch[i] == acc {
+						activeBatch[i] = replacement
+						log.Printf("replaced exhausted %s with available %s", acc.cfg.Label, replacement.cfg.Label)
+						stickyCount = 0
+						break
 					}
-					stickyCount = 0
-					break
 				}
-			}
-			rotationMu.Unlock()
-			go saveConfig()
-			if replaced {
-				exhaustRetries = 0 // reset — we got a fresh account from standby
+				rotationMu.Unlock()
+				go saveConfig()
+				continue
 			} else {
-				exhaustRetries++
-				if exhaustRetries >= 3 {
-					log.Println("exhausted 3 accounts and no standby left, giving up")
-					writeJSONError(w, "all accounts exhausted", "exhausted", http.StatusPaymentRequired)
-					return
-				}
+				log.Println("no available accounts remaining, request failed")
+				writeJSONError(w, "all accounts exhausted", "exhausted", http.StatusPaymentRequired)
+				return
 			}
-			continue
 		}
 
 		if errors.Is(err, kiro.ErrSuspended) {
