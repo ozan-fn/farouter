@@ -2,6 +2,7 @@ package rtk
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 )
 
@@ -102,11 +103,8 @@ func compressKiroFormat(body []byte) (out []byte, stats *Stats) {
 				if partMap == nil {
 					continue
 				}
-				text, _ := partMap["text"].(string)
-				if text == "" {
-					continue
-				}
-				compressed := compressText(text, stats, "kiro-tool-result")
+			text, _ := partMap["text"].(string)
+			compressed := compressText(text, stats, "kiro-tool-result")
 				if compressed != text {
 					partMap["text"] = compressed
 					changed = true
@@ -166,9 +164,10 @@ func FormatRtkLog(stats *Stats) string {
 			filters = append(filters, h.Filter)
 		}
 	}
-	pct := "0"
+	pct := "0.0"
 	if stats.BytesBefore > 0 {
-		pct = itoa(saved * 100 / stats.BytesBefore)
+		p := float64(saved) * 100 / float64(stats.BytesBefore)
+		pct = fmt.Sprintf("%.1f", p)
 	}
 	fStr := ""
 	for i, f := range filters {

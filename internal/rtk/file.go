@@ -1,6 +1,7 @@
 package rtk
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -139,10 +140,12 @@ func (p *LsParser) Parse(input string) string {
 
 func humanSize(bytes int) string {
 	if bytes >= 1048576 {
-		return itoa(bytes/1048576) + "." + itoa((bytes%1048576)/104857) + "M"
+		mb := float64(bytes) / 1048576
+		return fmt.Sprintf("%.1fM", mb)
 	}
 	if bytes >= 1024 {
-		return itoa(bytes/1024) + "." + itoa((bytes%1024)/102) + "K"
+		kb := float64(bytes) / 1024
+		return fmt.Sprintf("%.1fK", kb)
 	}
 	return itoa(bytes) + "B"
 }
@@ -228,7 +231,7 @@ func (p *GrepParser) Parse(input string) string {
 		}
 		out.WriteString("\n")
 	}
-	return strings.TrimRight(out.String(), "\n")
+	return out.String()
 }
 
 // ── FindParser — port of VansRouter filters/find.js ────────────────────
@@ -250,9 +253,11 @@ func (p *FindParser) Parse(input string) string {
 
 	byDir := make(map[string][]string)
 	for _, path := range filtered {
-		lastSep := strings.LastIndex(path, "/")
-		if lastSep == -1 {
-			lastSep = strings.LastIndex(path, "\\")
+		lastSlash := strings.LastIndex(path, "/")
+		lastBackslash := strings.LastIndex(path, "\\")
+		lastSep := lastSlash
+		if lastBackslash > lastSep {
+			lastSep = lastBackslash
 		}
 		var dir, basename string
 		if lastSep == -1 {
@@ -420,15 +425,15 @@ func (p *SearchListParser) Parse(input string) string {
 		}
 		out.WriteString("\n")
 	}
-	if len(dirs) > SEARCH_TOTAL_DIR_MAX {
-		out.WriteString("+")
-		out.WriteString(itoa(len(dirs) - SEARCH_TOTAL_DIR_MAX))
+	if len(dirs) > FIND_TOTAL_DIR_MAX {
+		out.WriteString("\n+")
+		out.WriteString(itoa(len(dirs) - FIND_TOTAL_DIR_MAX))
 		out.WriteString(" more dirs\n")
 	}
-	return strings.TrimRight(out.String(), "\n")
+	return out.String()
 }
 
-// ── ReadNumberedParser — port of VansRouter filters/readNumbered.js ────
+// ── ReadNumberedParser
 type ReadNumberedParser struct{}
 
 func (p *ReadNumberedParser) Name() string { return "read-numbered" }

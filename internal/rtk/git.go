@@ -140,7 +140,7 @@ func (p *GitStatusParser) Parse(output string) string {
 		if len(raw) >= 3 && rePorcelainStatus.MatchString(raw[:2]) && raw[2] == ' ' {
 			x := raw[0]
 			y := raw[1]
-			file := strings.TrimSpace(raw[3:])
+			file := raw[3:]
 			if raw[:2] == "??" {
 				untracked++
 				untrackedFiles = append(untrackedFiles, file)
@@ -326,7 +326,7 @@ func (p *GitLogParser) Parse(text string) string {
 			pushLine(trimmed)
 			continue
 		}
-		if rePureGraph.MatchString(trimmed) {
+		if rePureGraph.MatchString(trimmed) && strings.ContainsAny(trimmed, "*|/\\") {
 			continue
 		}
 		pushLine(trimmed)

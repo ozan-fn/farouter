@@ -8,25 +8,26 @@ import (
 
 // ── constants matching VansRouter open-sse/rtk/constants.js ─────────────
 const (
-	MinCompressSize     = 500            // bytes; skip tiny blobs
-	RawCap              = 10 * 1024 * 1024 // 10 MiB; skip oversized blobs
-	DETECT_WINDOW       = 1024
-	GIT_LOG_MAX_LINES   = 200
-	GIT_DIFF_HUNK_MAX   = 100
-	STATUS_MAX_FILES    = 10
+	MinCompressSize      = 500
+	RawCap               = 10 * 1024 * 1024
+	DETECT_WINDOW        = 1024
+	GIT_LOG_MAX_LINES    = 200
+	GIT_DIFF_HUNK_MAX    = 100
+	GIT_DIFF_CONTEXT_KEEP = 3
+	DEDUP_LINE_MAX       = 2000
+	GREP_PER_FILE_MAX    = 10
+	FIND_PER_DIR_MAX     = 10
+	FIND_TOTAL_DIR_MAX   = 20
+	STATUS_MAX_FILES     = 10
 	STATUS_MAX_UNTRACKED = 10
-	GREP_PER_FILE_MAX   = 10
-	FIND_PER_DIR_MAX    = 10
-	FIND_TOTAL_DIR_MAX  = 20
-	LS_EXT_SUMMARY_TOP  = 5
-	TREE_MAX_LINES      = 200
-	SEARCH_PER_DIR_MAX  = 10
+	LS_EXT_SUMMARY_TOP   = 5
+	TREE_MAX_LINES       = 200
+	SEARCH_PER_DIR_MAX   = 10
 	SEARCH_TOTAL_DIR_MAX = 20
-	SMART_HEAD          = 120
-	SMART_TAIL          = 60
-	SMART_MIN_LINES     = 250
-	READ_NUM_MIN_RATIO  = 0.70
-	DEDUP_LINE_MAX      = 2000
+	SMART_HEAD           = 120
+	SMART_TAIL           = 60
+	SMART_MIN_LINES      = 250
+	READ_NUM_MIN_RATIO   = 0.7
 )
 
 // ── Parser interface ───────────────────────────────────────────────────
@@ -143,7 +144,7 @@ func autoDetectFilter(text string) Parser {
 		return &DedupLogParser{}
 	}
 
-	if len(lines) >= SMART_MIN_LINES {
+	if len(strings.Split(text, "\n")) >= SMART_MIN_LINES {
 		return &SmartTruncateParser{}
 	}
 

@@ -148,7 +148,7 @@ func (p *BuildOutputParser) Parse(input string) string {
 
 var (
 	reCargoCont     = regexp.MustCompile(`^\s*(-->|\||\d+\s*\||=)`)
-	reNpmErr        = regexp.MustCompile(`(?i)^npm (ERR!|error)`)
+	reNpmErr        = regexp.MustCompile(`(?i)^npm (ERR!|error)|^yarn error`)
 	reNpmDeprecate  = regexp.MustCompile(`(?i)^npm warn deprecated`)
 	reNpmWarn       = regexp.MustCompile(`(?i)^npm warn|^yarn warn`)
 	reErrorLine     = regexp.MustCompile(`(?i)^error(\[|:)|^error -->`)
@@ -158,9 +158,9 @@ var (
 	reBuildFailBracket = regexp.MustCompile(`(?i)^\[ERROR\]`)
 	reWarningBracket = regexp.MustCompile(`(?i)^\[WARNING\]`)
 	reCompiling     = regexp.MustCompile(`(?i)^\s*Compiling\s+\S+`)
-	reDownloading   = regexp.MustCompile(`(?i)^\s*(Downloading\s+\S+|Fetching\s+)`)
+	reDownloading   = regexp.MustCompile(`(?i)^\s*Downloading\s+\S+|^Fetching\s+`)
 	reSummaryLine   = regexp.MustCompile(`(?i)^(added|removed|changed|audited|installed)\s+\d+\s+package`)
-	reBuildSuccess  = regexp.MustCompile(`(?i)^\s*Finished\s+|^(BUILD SUCCESS|BUILD SUCCESSFUL)`)
+	reBuildSuccess  = regexp.MustCompile(`(?i)^\s*Finished\s+|^BUILD SUCCESS`)
 	reVulnCount     = regexp.MustCompile(`^\d+\s+(vulnerabilities|packages?|warnings?|errors?)`)
 	reSuccessInstall = regexp.MustCompile(`(?i)^Successfully (installed|built)`)
 	reNpmAudit      = regexp.MustCompile(`(?i)^(To address .* issues|Run \x60npm (audit|fund)\x60)`)
