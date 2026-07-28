@@ -351,10 +351,12 @@ func getNextAvailableAccount() *accountState {
 	rotationMu.Lock()
 	defer rotationMu.Unlock()
 	
-	if len(standbyQueue) > 0 {
+	for len(standbyQueue) > 0 {
 		acc := standbyQueue[0]
 		standbyQueue = standbyQueue[1:]
-		return acc
+		if acc.available() {
+			return acc
+		}
 	}
 	
 	for _, a := range accounts {
@@ -872,7 +874,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				fillActiveBatch()
 				credsErrCount = 0
-				attempt = 0
 				continue
 			}
 			writeJSONError(w, "all accounts exhausted", "service_unavailable", http.StatusServiceUnavailable)
@@ -945,6 +946,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
+	writeJSONError(w, "all accounts exhausted after max retries", "service_unavailable", http.StatusServiceUnavailable)
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
