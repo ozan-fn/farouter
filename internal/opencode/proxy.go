@@ -37,12 +37,13 @@ var webshareProxies = []string{
 }
 
 type Pool struct {
-	mu           sync.RWMutex
-	addrs        []string
-	idx          int
-	tr           *http.Transport
-	webshareIdx  int
-	directTried  bool
+	mu            sync.RWMutex
+	addrs         []string
+	idx           int
+	tr            *http.Transport
+	webshareIdx   int
+	websharetr    *http.Transport
+	directTried   bool
 }
 
 func TransportFor(addr string) *http.Transport {
@@ -179,28 +180,39 @@ func Handle(w http.ResponseWriter, r *http.Request, pool *Pool) {
 		io.Copy(w, resp.Body)
 	}
 
-	for _, addr := range webshareProxies {
-		tr := TransportFor(addr)
-		if tr == nil {
-			continue
+	pool.mu.Lock()
+	if pool.websharetr == nil && pool.webshareIdx < len(webshareProxies) {
+		pool.websharetr = TransportFor(webshareProxies[pool.webshareIdx])
+	}
+	currentWebshare := pool.websharetr
+	currentAddr := ""
+	if pool.webshareIdx < len(webshareProxies) {
+		currentAddr = webshareProxies[pool.webshareIdx]
+	}
+	pool.mu.Unlock()
+
+	if currentWebshare != nil {
+		resp, err := tryRequest(currentWebshare, "webshare:"+currentAddr)
+		if err == nil && resp.StatusCode != 429 && resp.StatusCode < 500 {
+			log.Printf("opencode: webshare %s OK", currentAddr)
+			writeResponse(resp)
+			return
 		}
-		resp, err := tryRequest(tr, "webshare:"+addr)
 		if err != nil {
-			log.Printf("opencode webshare %s: %v", addr, err)
-			continue
-		}
-		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			errBody, _ := io.ReadAll(resp.Body)
+			log.Printf("opencode webshare %s: %v — rotate", currentAddr, err)
+		} else {
 			resp.Body.Close()
-			log.Printf("opencode webshare %s: HTTP %d", addr, resp.StatusCode)
-			if len(errBody) > 0 {
-				log.Printf("  body: %s", strings.TrimSpace(string(errBody)))
-			}
-			continue
+			log.Printf("opencode webshare %s: HTTP %d — rotate", currentAddr, resp.StatusCode)
 		}
-		log.Printf("opencode: webshare %s OK", addr)
-		writeResponse(resp)
-		return
+		pool.mu.Lock()
+		pool.webshareIdx++
+		if pool.webshareIdx < len(webshareProxies) {
+			pool.websharetr = TransportFor(webshareProxies[pool.webshareIdx])
+			log.Printf("opencode: rotated to webshare %s", webshareProxies[pool.webshareIdx])
+		} else {
+			pool.websharetr = nil
+		}
+		pool.mu.Unlock()
 	}
 
 	log.Printf("opencode: webshare exhausted, trying direct")

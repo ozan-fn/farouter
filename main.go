@@ -354,13 +354,13 @@ func getNextAvailableAccount() *accountState {
 	for len(standbyQueue) > 0 {
 		acc := standbyQueue[0]
 		standbyQueue = standbyQueue[1:]
-		if acc.available() {
+		if acc.available() && !acc.cfg.Exhausted {
 			return acc
 		}
 	}
 	
 	for _, a := range accounts {
-		if !a.available() {
+		if !a.available() || a.cfg.Exhausted {
 			continue
 		}
 		inPool := false
