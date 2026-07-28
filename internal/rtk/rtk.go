@@ -44,11 +44,7 @@ func safeApply(p Parser, text string) (result string) {
 			result = text
 		}
 	}()
-	out := p.Parse(text)
-	if out == "" {
-		return text
-	}
-	return out
+	return p.Parse(text)
 }
 
 // ── autodetect regexes matching VansRouter open-sse/rtk/autodetect.js ──

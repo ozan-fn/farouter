@@ -316,7 +316,7 @@ func (p *FindParser) Parse(input string) string {
 		out.WriteString(itoa(len(dirs) - FIND_TOTAL_DIR_MAX))
 		out.WriteString(" more dirs\n")
 	}
-	return strings.TrimRight(out.String(), "\n")
+	return out.String()
 }
 
 // ── TreeParser — port of VansRouter filters/tree.js ────────────────────
@@ -425,12 +425,12 @@ func (p *SearchListParser) Parse(input string) string {
 		}
 		out.WriteString("\n")
 	}
-	if len(dirs) > FIND_TOTAL_DIR_MAX {
+	if len(dirs) > SEARCH_TOTAL_DIR_MAX {
 		out.WriteString("\n+")
-		out.WriteString(itoa(len(dirs) - FIND_TOTAL_DIR_MAX))
+		out.WriteString(itoa(len(dirs) - SEARCH_TOTAL_DIR_MAX))
 		out.WriteString(" more dirs\n")
 	}
-	return out.String()
+	return strings.TrimRight(out.String(), "\n")
 }
 
 // ── ReadNumberedParser
