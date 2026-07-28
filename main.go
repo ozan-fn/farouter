@@ -21,6 +21,7 @@ import (
 
 	"farouter/internal/analytics"
 	"farouter/internal/kiro"
+	"farouter/internal/opencode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -625,7 +626,24 @@ func main() {
 
 	r.Post("/api/login", handleLogin)
 	r.Get("/api/verify", handleVerify)
-	r.Post("/v1/chat/completions", handleChatCompletions)
+
+	opencodePool := opencode.InitPool()
+	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		var modelCheck struct {
+			Model string `json:"model"`
+		}
+		json.Unmarshal(body, &modelCheck)
+
+		if strings.Contains(strings.ToLower(modelCheck.Model), "deepseek") {
+			opencode.Handle(w, r, opencodePool)
+			return
+		}
+
+		handleChatCompletions(w, r)
+	})
 
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware)
