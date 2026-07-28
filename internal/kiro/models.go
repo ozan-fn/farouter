@@ -20,8 +20,8 @@ func ResolveModel(model string) ResolvedModel {
 		model = model[:len(model)-len(thinkingSuffix)]
 	}
 
-	if model == "auto" || model == "" {
-		return ResolvedModel{Upstream: AutoModel, Thinking: thinking}
+	if model == "" {
+		model = AutoModel
 	}
 
 	return ResolvedModel{Upstream: model, Agentic: agentic, Thinking: thinking}

@@ -16,6 +16,11 @@ const (
 
 	AutoModel = "claude-sonnet-4.5"
 
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+	RoleTool      = "tool"
+	RoleSystem    = "system"
+
 	AgenticSystemPrompt = `# CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)
 
 You MUST follow these rules for ALL file operations. Violation causes server timeouts and task failure.

@@ -293,12 +293,11 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	var pendingToolResults []any
 	var pendingImages []map[string]any
 	var toolDocsParts []string
-	var pendingSystemContent []string
 	currentRole := ""
 	toolsInjected := false
 
 	flush := func() {
-		if currentRole == "user" {
+		if currentRole == RoleUser {
 			text := strings.Join(pendingUserContent, "\n\n")
 			hasContext := len(pendingToolResults) > 0 || len(pendingImages) > 0
 			content := text
@@ -332,7 +331,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 			pendingUserContent = nil
 			pendingToolResults = nil
 			pendingImages = nil
-		} else if currentRole == "assistant" {
+		} else if currentRole == RoleAssistant {
 			content := strings.Join(pendingAssistantContent, "\n\n")
 			if strings.TrimSpace(content) == "" {
 				content = "(empty)"
@@ -346,15 +345,11 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 
 	for _, msg := range messages {
 		role := msg.Role
-		if role == "system" {
-			content, _, _ := extractUserContent(msg.Content, false)
-			if content != "" {
-				pendingSystemContent = append(pendingSystemContent, content)
-			}
-			continue
+		if role == RoleSystem {
+			role = RoleUser
 		}
-		if role == "tool" {
-			role = "user"
+		if role == RoleTool {
+			role = RoleUser
 		}
 
 		if role != currentRole && currentRole != "" {
@@ -362,8 +357,13 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 		}
 		currentRole = role
 
-		if role == "user" {
-			if msg.Role == "tool" {
+		if role == RoleUser {
+			if msg.Role == RoleSystem {
+				content, _, _ := extractUserContent(msg.Content, false)
+				if content != "" {
+					pendingUserContent = append(pendingUserContent, "<instructions>\n"+content+"\n</instructions>")
+				}
+			} else if msg.Role == RoleTool {
 				toolContent := serializeToolResultContent(msg.Content)
 				pendingToolResults = append(pendingToolResults, map[string]any{
 					"toolUseId": msg.ToolCallID,
@@ -378,7 +378,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 					pendingUserContent = append(pendingUserContent, content)
 				}
 			}
-		} else if role == "assistant" {
+		} else if role == RoleAssistant {
 			textContent, toolUses := extractAssistantContent(msg)
 			if textContent != "" {
 				pendingAssistantContent = append(pendingAssistantContent, textContent)
@@ -447,7 +447,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	return convertResult{
 		history:        alternating,
 		currentMessage: currentMessage,
-		systemContent:  strings.Join(pendingSystemContent, "\n\n"),
+		systemContent:  "",
 		toolDocs:       strings.Join(toolDocsParts, "\n\n---\n\n"),
 		toolsAttached:  toolsInjected,
 	}
@@ -593,23 +593,10 @@ func mergeConsecutiveRoles(history []map[string]any) []map[string]any {
 }
 
 func ensureAlternatingRoles(history []map[string]any) []map[string]any {
-	var out []map[string]any
-	for _, item := range history {
-		if len(out) > 0 {
-			last := out[len(out)-1]
-			if item["userInputMessage"] != nil && last["userInputMessage"] != nil {
-				out = append(out, map[string]any{
-					"assistantResponseMessage": map[string]any{"content": "(empty)"},
-				})
-			}
-		}
-		out = append(out, item)
-	}
-	return out
+	return history
 }
 
 func fixOrphanedToolResults(history []map[string]any) {
-	// Phase 1: Collect all valid toolUseIds from assistant messages in history
 	validIds := make(map[string]bool)
 	for _, h := range history {
 		arm, _ := h["assistantResponseMessage"].(map[string]any)
@@ -622,82 +609,17 @@ func fixOrphanedToolResults(history []map[string]any) {
 		}
 	}
 
-	// Phase 2: Filter toolResults by valid IDs, salvage orphaned ones as text
 	for i := 0; i < len(history); i++ {
 		item := history[i]
 		uim, ok := item["userInputMessage"].(map[string]any)
 		if !ok {
 			continue
 		}
-		ctx, ok := uim["userInputMessageContext"].(map[string]any)
-		if !ok {
-			continue
-		}
-		trArr, _ := ctx["toolResults"].([]any)
-		if len(trArr) == 0 {
-			continue
-		}
-
-		var kept []any
-		var salvaged []string
-		for _, tr := range trArr {
-			m, _ := tr.(map[string]any)
-			id, _ := m["toolUseId"].(string)
-			
-			if validIds[id] {
-				// Valid tool result, keep it
-				kept = append(kept, tr)
-			} else {
-				// Orphaned tool result, salvage as text
-				content, _ := m["content"].([]any)
-				var txt string
-				for _, c := range content {
-					cm, _ := c.(map[string]any)
-					if t, ok := cm["text"].(string); ok {
-						txt += t
-					}
-				}
-				if id != "" {
-					salvaged = append(salvaged, fmt.Sprintf("[Tool Result (%s)]\n%s", id, txt))
-				} else {
-					salvaged = append(salvaged, fmt.Sprintf("[Tool Result]\n%s", txt))
-				}
-			}
-		}
-
-		// Update toolResults with kept items only
-		if len(kept) > 0 {
-			ctx["toolResults"] = kept
-		} else {
-			delete(ctx, "toolResults")
-		}
-
-		// Prepend salvaged text to user message content
-		if len(salvaged) > 0 {
-			existing, _ := uim["content"].(string)
-			joined := strings.Join(salvaged, "\n\n")
-			if existing != "" {
-				uim["content"] = joined + "\n\n" + existing
-			} else {
-				uim["content"] = joined
-			}
-		}
-
-		// Cleanup empty context
-		if len(ctx) == 0 {
-			delete(uim, "userInputMessageContext")
-		}
+		salvageOrphanedToolResults(validIds, uim)
 	}
 }
 
-func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[string]any) {
-	if currentMessage == nil {
-		return
-	}
-	uim, ok := currentMessage["userInputMessage"].(map[string]any)
-	if !ok {
-		return
-	}
+func salvageOrphanedToolResults(validIds map[string]bool, uim map[string]any) {
 	ctx, ok := uim["userInputMessageContext"].(map[string]any)
 	if !ok {
 		return
@@ -707,20 +629,6 @@ func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[s
 		return
 	}
 
-	// Phase 1: Collect all valid toolUseIds from assistant messages in history
-	validIds := make(map[string]bool)
-	for _, h := range history {
-		arm, _ := h["assistantResponseMessage"].(map[string]any)
-		tuArr, _ := arm["toolUses"].([]any)
-		for _, tu := range tuArr {
-			m, _ := tu.(map[string]any)
-			if id, ok := m["toolUseId"].(string); ok && id != "" {
-				validIds[id] = true
-			}
-		}
-	}
-
-	// Phase 2: Filter toolResults by valid IDs, salvage orphaned ones as text
 	var kept []any
 	var salvaged []string
 	for _, tr := range trArr {
@@ -728,10 +636,8 @@ func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[s
 		id, _ := m["toolUseId"].(string)
 		
 		if validIds[id] {
-			// Valid tool result, keep it
 			kept = append(kept, tr)
 		} else {
-			// Orphaned tool result, salvage as text
 			content, _ := m["content"].([]any)
 			var txt string
 			for _, c := range content {
@@ -748,14 +654,12 @@ func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[s
 		}
 	}
 
-	// Update toolResults with kept items only
 	if len(kept) > 0 {
 		ctx["toolResults"] = kept
 	} else {
 		delete(ctx, "toolResults")
 	}
 
-	// Prepend salvaged text to user message content
 	if len(salvaged) > 0 {
 		existing, _ := uim["content"].(string)
 		joined := strings.Join(salvaged, "\n\n")
@@ -766,21 +670,44 @@ func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[s
 		}
 	}
 
-	// Cleanup empty context
 	if len(ctx) == 0 {
 		delete(uim, "userInputMessageContext")
 	}
 }
 
+func fixOrphanedToolResultsSingle(currentMessage map[string]any, history []map[string]any) {
+	if currentMessage == nil {
+		return
+	}
+	uim, ok := currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	validIds := make(map[string]bool)
+	for _, h := range history {
+		arm, _ := h["assistantResponseMessage"].(map[string]any)
+		tuArr, _ := arm["toolUses"].([]any)
+		for _, tu := range tuArr {
+			m, _ := tu.(map[string]any)
+			if id, ok := m["toolUseId"].(string); ok && id != "" {
+				validIds[id] = true
+			}
+		}
+	}
+
+	salvageOrphanedToolResults(validIds, uim)
+}
+
 func flattenToolInteractions(messages []Message) []Message {
 	var out []Message
 	for _, msg := range messages {
-		if msg.Role == "tool" {
+		if msg.Role == RoleTool {
 			content := msgContentString(msg.Content)
-			out = append(out, Message{Role: "user", Content: "[Tool result: " + content + "]"})
+			out = append(out, Message{Role: RoleUser, Content: "[Tool result: " + content + "]"})
 			continue
 		}
-		if msg.Role == "assistant" {
+		if msg.Role == RoleAssistant {
 			var parts []string
 			if s, ok := msg.Content.(string); ok {
 				if s != "" {
@@ -803,10 +730,10 @@ func flattenToolInteractions(messages []Message) []Message {
 			for _, tc := range msg.ToolCalls {
 				parts = append(parts, "[Tool call: "+tc.Function.Name+"("+tc.Function.Arguments+")]")
 			}
-			out = append(out, Message{Role: "assistant", Content: strings.Join(parts, "\n")})
+			out = append(out, Message{Role: RoleAssistant, Content: strings.Join(parts, "\n")})
 			continue
 		}
-		if msg.Role == "user" {
+		if msg.Role == RoleUser {
 			if arr, ok := msg.Content.([]any); ok {
 				var newContent []any
 				for _, c := range arr {
@@ -817,7 +744,7 @@ func flattenToolInteractions(messages []Message) []Message {
 						newContent = append(newContent, c)
 					}
 				}
-				out = append(out, Message{Role: "user", Content: newContent})
+				out = append(out, Message{Role: RoleUser, Content: newContent})
 				continue
 			}
 		}

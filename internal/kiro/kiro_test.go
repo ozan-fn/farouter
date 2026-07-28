@@ -369,7 +369,7 @@ func TestConvertMessagesFlattensToolInteractionsWithoutTools(t *testing.T) {
 }
 
 func TestEnsureAlternatingRoles(t *testing.T) {
-	t.Run("inserts synthetic assistant between consecutive users", func(t *testing.T) {
+	t.Run("no-op function returns history as-is", func(t *testing.T) {
 		history := []map[string]any{
 			{"userInputMessage": map[string]any{"content": "a"}},
 			{"userInputMessage": map[string]any{"content": "b"}},
@@ -378,20 +378,17 @@ func TestEnsureAlternatingRoles(t *testing.T) {
 
 		result := ensureAlternatingRoles(history)
 
-		if len(result) != 4 {
-			t.Fatalf("len = %d, want 4", len(result))
+		if len(result) != 3 {
+			t.Fatalf("len = %d, want 3", len(result))
 		}
 		if result[0]["userInputMessage"] == nil {
 			t.Error("result[0] should be user")
 		}
-		if result[1]["assistantResponseMessage"] == nil {
-			t.Error("result[1] should be assistant (synthetic)")
+		if result[1]["userInputMessage"] == nil {
+			t.Error("result[1] should be user")
 		}
-		if result[2]["userInputMessage"] == nil {
-			t.Error("result[2] should be user")
-		}
-		if result[3]["assistantResponseMessage"] == nil {
-			t.Error("result[3] should be assistant")
+		if result[2]["assistantResponseMessage"] == nil {
+			t.Error("result[2] should be assistant")
 		}
 	})
 
