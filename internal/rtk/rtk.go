@@ -29,40 +29,6 @@ const (
 	DEDUP_LINE_MAX      = 2000
 )
 
-// ── stats matching VansRouter ──────────────────────────────────────────
-type Stats struct {
-	BytesBefore int
-	BytesAfter  int
-	Hits        []Hit
-}
-type Hit struct {
-	Shape  string
-	Filter string
-	Saved  int
-}
-
-func FormatRtkLog(stats *Stats) string {
-	if stats == nil || len(stats.Hits) == 0 {
-		return ""
-	}
-	saved := stats.BytesBefore - stats.BytesAfter
-	seen := make(map[string]bool)
-	var filters []string
-	for _, h := range stats.Hits {
-		if !seen[h.Filter] {
-			seen[h.Filter] = true
-			filters = append(filters, h.Filter)
-		}
-	}
-	pct := "0"
-	if stats.BytesBefore > 0 {
-		pct = itoa(saved * 100 / stats.BytesBefore)
-	}
-	return "[RTK] saved " + itoa(saved) + "B / " + itoa(stats.BytesBefore) +
-		"B (" + pct + "%) via [" + strings.Join(filters, ",") +
-		"] hits=" + itoa(len(stats.Hits))
-}
-
 // ── Parser interface ───────────────────────────────────────────────────
 type Parser interface {
 	Name() string

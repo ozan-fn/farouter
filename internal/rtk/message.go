@@ -5,21 +5,59 @@ import (
 	"log"
 )
 
-// ProcessKiroBody applies RTK filtering directly on the Kiro payload structure.
-// Navigates conversationState.history[].userInputMessage.userInputMessageContext.toolResults[].content[].text
-// matching VansRouter compressKiroFormat in open-sse/rtk/index.js
+type Stats struct {
+	BytesBefore int
+	BytesAfter  int
+	Hits        []Hit
+}
+
+type Hit struct {
+	Shape  string
+	Filter string
+	Saved  int
+}
+
+// ProcessKiroBody applies RTK filtering on the Kiro payload.
+// Mirrors VansRouter compressKiroFormat in open-sse/rtk/index.js.
+// Fail-open: any panic returns original body untouched.
 func ProcessKiroBody(body []byte) []byte {
+	result, _ := compressKiroFormat(body)
+	if result == nil {
+		return body
+	}
+	return result
+}
+
+// CompressKiroBody is like ProcessKiroBody but also returns compression stats.
+func CompressKiroBody(body []byte) ([]byte, *Stats) {
+	result, stats := compressKiroFormat(body)
+	if result == nil {
+		return body, stats
+	}
+	return result, stats
+}
+
+func compressKiroFormat(body []byte) (out []byte, stats *Stats) {
+	stats = &Stats{}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[rtk] compressKiroFormat panic — passing through raw output: %v", r)
+			out = nil
+			stats = nil
+		}
+	}()
+
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
+		return nil, nil
 	}
 
 	state, _ := raw["conversationState"].(map[string]any)
 	if state == nil {
-		return body
+		return nil, nil
 	}
 
-	// Collect all user messages that may have toolResults
 	var allMessages []map[string]any
 	if history, ok := state["history"].([]any); ok {
 		for _, h := range history {
@@ -53,7 +91,7 @@ func ProcessKiroBody(body []byte) []byte {
 			}
 			status, _ := trMap["status"].(string)
 			if status == "error" {
-				continue // preserve error traces
+				continue
 			}
 			content, _ := trMap["content"].([]any)
 			if len(content) == 0 {
@@ -68,33 +106,77 @@ func ProcessKiroBody(body []byte) []byte {
 				if text == "" {
 					continue
 				}
-				if len(text) < MinCompressSize || len(text) > RawCap {
-					continue
+				compressed := compressText(text, stats, "kiro-tool-result")
+				if compressed != text {
+					partMap["text"] = compressed
+					changed = true
 				}
-
-				// Use autoDetectFilter + safeApply matching VansRouter
-				p := autoDetectFilter(text)
-				if p == nil {
-					continue
-				}
-				filtered := safeApply(p, text)
-				if filtered == "" || len(filtered) >= len(text) {
-					continue
-				}
-				log.Printf("[rtk] kiro toolResult: %dB→%dB (%s)", len(text), len(filtered), p.Name())
-				partMap["text"] = filtered
-				changed = true
 			}
 		}
 	}
 
 	if !changed {
-		return body
+		return nil, stats
 	}
 
 	b, err := json.Marshal(raw)
 	if err != nil {
-		return body
+		return nil, stats
 	}
-	return b
+	return b, stats
+}
+
+func compressText(text string, stats *Stats, shape string) string {
+	bytesIn := len(text)
+	stats.BytesBefore += bytesIn
+
+	if bytesIn < MinCompressSize || bytesIn > RawCap {
+		stats.BytesAfter += bytesIn
+		return text
+	}
+
+	p := autoDetectFilter(text)
+	if p == nil {
+		stats.BytesAfter += bytesIn
+		return text
+	}
+
+	out := safeApply(p, text)
+
+	if out == "" || len(out) >= bytesIn {
+		stats.BytesAfter += bytesIn
+		return text
+	}
+
+	stats.BytesAfter += len(out)
+	stats.Hits = append(stats.Hits, Hit{Shape: shape, Filter: p.Name(), Saved: bytesIn - len(out)})
+	return out
+}
+
+func FormatRtkLog(stats *Stats) string {
+	if stats == nil || len(stats.Hits) == 0 {
+		return ""
+	}
+	saved := stats.BytesBefore - stats.BytesAfter
+	seen := make(map[string]bool)
+	var filters []string
+	for _, h := range stats.Hits {
+		if !seen[h.Filter] {
+			seen[h.Filter] = true
+			filters = append(filters, h.Filter)
+		}
+	}
+	pct := "0"
+	if stats.BytesBefore > 0 {
+		pct = itoa(saved * 100 / stats.BytesBefore)
+	}
+	fStr := ""
+	for i, f := range filters {
+		if i > 0 {
+			fStr += ","
+		}
+		fStr += f
+	}
+	return "[RTK] saved " + itoa(saved) + "B / " + itoa(stats.BytesBefore) +
+		"B (" + pct + "%) via [" + fStr + "] hits=" + itoa(len(stats.Hits))
 }

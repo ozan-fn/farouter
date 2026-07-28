@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"farouter/internal/rtk"
 	"github.com/google/uuid"
 )
 
@@ -187,7 +188,18 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 		}
 	}
 
+	injectCavemanPonytail(payload, req)
+
 	return json.Marshal(payload)
+}
+
+func injectCavemanPonytail(payload map[string]any, req ChatRequest) {
+	if req.CavemanLevel != "" {
+		rtk.InjectCaveman(payload, req.CavemanLevel)
+	}
+	if req.PonytailLevel != "" {
+		rtk.InjectPonytail(payload, req.PonytailLevel)
+	}
 }
 
 func resolveKiroEffort(req ChatRequest) string {

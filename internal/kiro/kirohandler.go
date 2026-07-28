@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 )
@@ -253,6 +254,7 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 	flushPendingThinking(&state.thinkingState, onContent, onReasoning)
 
 	if err != nil {
+		log.Printf("[kiro] stream error: %v | events=%v", err, state.eventCounts)
 		writeStreamError(w, 502, err.Error())
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		return err

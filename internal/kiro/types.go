@@ -118,6 +118,8 @@ type ChatRequest struct {
 	MaxCompletion   int                 `json:"max_completion_tokens,omitempty"`
 	OutputConfig    *OutputConfig       `json:"output_config,omitempty"`
 	Thinking        *ThinkingBlock      `json:"thinking,omitempty"`
+	CavemanLevel    string              `json:"caveman_level,omitempty"`
+	PonytailLevel   string              `json:"ponytail_level,omitempty"`
 }
 
 type OutputConfig struct {

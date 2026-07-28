@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -114,7 +115,7 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 	go func() {
 		defer pw.Close()
 		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 65536), 65536)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 		for scanner.Scan() {
 			if !sc.IsConnected() {
@@ -222,6 +223,16 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 
 			output := formatSSE(parsed)
 			pw.Write([]byte(output))
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Printf("[kiro] ssepipe scanner error: %v | lines=%d", err, atomic.LoadInt64(&state.sseLineCount))
+			if !state.streamDoneSent.Load() {
+				writeStreamError(pw, 502, "upstream stream error: "+err.Error())
+				pw.Write([]byte(SSEDone))
+				state.streamDoneSent.Store(true)
+			}
+			return
 		}
 
 		if state.totalContentLength > 0 {

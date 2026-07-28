@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -72,7 +73,11 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 	}
 
 	if rtkEnabled {
-		kiroBody = rtk.ProcessKiroBody(kiroBody)
+		compressed, stats := rtk.CompressKiroBody(kiroBody)
+		kiroBody = compressed
+		if line := rtk.FormatRtkLog(stats); line != "" {
+			log.Print(line)
+		}
 	}
 
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)
@@ -251,7 +256,11 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	}
 
 	if rtkEnabled {
-		kiroBody = rtk.ProcessKiroBody(kiroBody)
+		compressed, stats := rtk.CompressKiroBody(kiroBody)
+		kiroBody = compressed
+		if line := rtk.FormatRtkLog(stats); line != "" {
+			log.Print(line)
+		}
 	}
 
 	region := ResolveRuntimeRegion(creds.PSD.Region, profileArn)

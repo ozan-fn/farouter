@@ -60,6 +60,8 @@ type Config struct {
 	CurrentSlot     int               `json:"currentSlot,omitempty"`
 	StickyCount     int               `json:"stickyCount,omitempty"`
 	RTKEnabled      bool              `json:"rtkEnabled"`
+	CavemanLevel    string            `json:"cavemanLevel,omitempty"`
+	PonytailLevel   string            `json:"ponytailLevel,omitempty"`
 	Accounts        []AccountConfig   `json:"accounts"`
 	TokensUsed      int64             `json:"tokensUsed,omitempty"`
 	TokensGenerated int64             `json:"tokensGenerated,omitempty"`
@@ -99,6 +101,9 @@ var (
 	cfgPassword   string
 	rtkEnabled    = true
 	rtkMu         sync.RWMutex
+	cavemanLevel  string
+	ponytailLevel string
+	tokenSaverMu  sync.RWMutex
 	analyticsData *analytics.Analytics
 )
 
@@ -384,9 +389,15 @@ func saveConfig() {
 	rtkMu.RLock()
 	rtkVal := rtkEnabled
 	rtkMu.RUnlock()
+	tokenSaverMu.RLock()
+	caveman := cavemanLevel
+	ponytail := ponytailLevel
+	tokenSaverMu.RUnlock()
 	cfg := Config{
-		Password:   cfgPassword,
-		RTKEnabled: rtkVal,
+		Password:      cfgPassword,
+		RTKEnabled:    rtkVal,
+		CavemanLevel:  caveman,
+		PonytailLevel: ponytail,
 	}
 	
 	if analyticsData != nil {
@@ -457,6 +468,12 @@ func loadConfig() {
 	json.Unmarshal(data, &raw)
 	if _, ok := raw["rtkEnabled"]; ok {
 		rtkEnabled = cfg.RTKEnabled
+	}
+	if cfg.CavemanLevel != "" {
+		cavemanLevel = cfg.CavemanLevel
+	}
+	if cfg.PonytailLevel != "" {
+		ponytailLevel = cfg.PonytailLevel
 	}
 
 	cfgPassword = cfg.Password
@@ -652,6 +669,10 @@ func main() {
 		r.Get("/status", handleStatus)
 		r.Get("/api/rtk", handleRTK)
 		r.Post("/api/rtk", handleRTK)
+		r.Get("/api/caveman", handleCaveman)
+		r.Post("/api/caveman", handleCaveman)
+		r.Get("/api/ponytail", handlePonytail)
+		r.Post("/api/ponytail", handlePonytail)
 		r.Post("/accounts/reset", handleReset)
 		r.Post("/auth/kiro/refresh", handleKiroRefresh)
 		r.Get("/api/analytics/metrics", handleMetrics)
@@ -800,6 +821,74 @@ func handleRTK(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleCaveman(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tokenSaverMu.RLock()
+		level := cavemanLevel
+		tokenSaverMu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"cavemanLevel": level})
+
+	case http.MethodPost:
+		var body struct {
+			Level *string `json:"level"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		tokenSaverMu.Lock()
+		if body.Level == nil {
+			cavemanLevel = ""
+		} else {
+			cavemanLevel = *body.Level
+		}
+		level := cavemanLevel
+		tokenSaverMu.Unlock()
+		go saveConfig()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"cavemanLevel": level})
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func handlePonytail(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tokenSaverMu.RLock()
+		level := ponytailLevel
+		tokenSaverMu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ponytailLevel": level})
+
+	case http.MethodPost:
+		var body struct {
+			Level *string `json:"level"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		tokenSaverMu.Lock()
+		if body.Level == nil {
+			ponytailLevel = ""
+		} else {
+			ponytailLevel = *body.Level
+		}
+		level := ponytailLevel
+		tokenSaverMu.Unlock()
+		go saveConfig()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ponytailLevel": level})
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	<-bootReady
 	
@@ -819,6 +908,18 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 {
 		writeJSONError(w, "missing messages", "invalid_request_error", http.StatusBadRequest)
 		return
+	}
+
+	// Apply global caveman/ponytail levels if not set per-request
+	tokenSaverMu.RLock()
+	globalCaveman := cavemanLevel
+	globalPonytail := ponytailLevel
+	tokenSaverMu.RUnlock()
+	if req.CavemanLevel == "" && globalCaveman != "" {
+		req.CavemanLevel = globalCaveman
+	}
+	if req.PonytailLevel == "" && globalPonytail != "" {
+		req.PonytailLevel = globalPonytail
 	}
 
 	conversationID := r.Header.Get("X-Session-Id")

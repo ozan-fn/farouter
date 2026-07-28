@@ -1,23 +1,37 @@
 import { useEffect, useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 
+const CAVEMAN_LEVELS = ['', 'lite', 'full', 'ultra', 'wenyan-lite', 'wenyan', 'wenyan-ultra'] as const;
+const PONYTAIL_LEVELS = ['', 'lite', 'full', 'ultra'] as const;
+
 const Settings = () => {
   const [rtkEnabled, setRtkEnabled] = useState(true);
   const [toggling, setToggling] = useState(false);
+  const [cavemanLevel, setCavemanLevel] = useState('');
+  const [ponytailLevel, setPonytailLevel] = useState('');
+  const [cavemanToggling, setCavemanToggling] = useState(false);
+  const [ponytailToggling, setPonytailToggling] = useState(false);
   const [loading, setLoading] = useState(true);
   const [baseURL, setBaseURL] = useState('http://localhost:20180');
   const [apiKey, setApiKey] = useState('');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    fetch('/api/rtk')
-      .then((r) => r.json())
-      .then((data) => {
-        setRtkEnabled((data as { rtkEnabled: boolean }).rtkEnabled);
+    const fetchAll = async () => {
+      try {
+        const [rtkRes, cavemanRes, ponytailRes] = await Promise.all([
+          fetch('/api/rtk').then((r) => r.json()),
+          fetch('/api/caveman').then((r) => r.json()),
+          fetch('/api/ponytail').then((r) => r.json()),
+        ]);
+        setRtkEnabled((rtkRes as { rtkEnabled: boolean }).rtkEnabled);
+        setCavemanLevel((cavemanRes as { cavemanLevel: string }).cavemanLevel ?? '');
+        setPonytailLevel((ponytailRes as { ponytailLevel: string }).ponytailLevel ?? '');
+      } finally {
         setLoading(false);
-      })
-      .catch(() => setLoading(false));
-    
+      }
+    };
+    fetchAll();
     setBaseURL(window.location.origin);
   }, []);
 
@@ -33,6 +47,36 @@ const Settings = () => {
       setRtkEnabled(data.rtkEnabled);
     } finally {
       setToggling(false);
+    }
+  };
+
+  const setCaveman = async (level: string) => {
+    setCavemanToggling(true);
+    try {
+      const res = await fetch('/api/caveman', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: level || null }),
+      });
+      const data = (await res.json()) as { cavemanLevel: string };
+      setCavemanLevel(data.cavemanLevel ?? '');
+    } finally {
+      setCavemanToggling(false);
+    }
+  };
+
+  const setPonytail = async (level: string) => {
+    setPonytailToggling(true);
+    try {
+      const res = await fetch('/api/ponytail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: level || null }),
+      });
+      const data = (await res.json()) as { ponytailLevel: string };
+      setPonytailLevel(data.ponytailLevel ?? '');
+    } finally {
+      setPonytailToggling(false);
     }
   };
 
@@ -115,6 +159,56 @@ const Settings = () => {
                 {rtkEnabled ? 'Enabled' : 'Disabled'}
               </span>
               {toggling && <span className="ml-2 text-xs text-gray-500">updating...</span>}
+            </div>
+          </div>
+
+          {/* Caveman */}
+          <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
+            <h2 className="text-sm font-semibold text-gray-300">Caveman Mode</h2>
+            <p className="mt-1 text-xs text-gray-500">
+              Inject a terse-style instruction into every request's system prompt to reduce output tokens.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {CAVEMAN_LEVELS.map((lvl) => (
+                <button
+                  key={lvl || 'off'}
+                  onClick={() => setCaveman(lvl)}
+                  disabled={cavemanToggling}
+                  className={`px-3 py-1 text-xs transition focus:outline-none ${
+                    cavemanLevel === lvl
+                      ? 'bg-cyan-500 text-white'
+                      : 'border border-gray-600 text-gray-400 hover:border-cyan-500 hover:text-cyan-400'
+                  }`}
+                >
+                  {lvl || 'off'}
+                </button>
+              ))}
+              {cavemanToggling && <span className="text-xs text-gray-500 self-center">updating...</span>}
+            </div>
+          </div>
+
+          {/* Ponytail */}
+          <div className="border border-gray-800 bg-gray-900/30 p-5 transition hover:border-gray-700 hover:bg-gray-900/50">
+            <h2 className="text-sm font-semibold text-gray-300">Ponytail Mode</h2>
+            <p className="mt-1 text-xs text-gray-500">
+              Inject a lazy-senior-dev (YAGNI / stdlib-first) instruction to reduce generated code verbosity.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {PONYTAIL_LEVELS.map((lvl) => (
+                <button
+                  key={lvl || 'off'}
+                  onClick={() => setPonytail(lvl)}
+                  disabled={ponytailToggling}
+                  className={`px-3 py-1 text-xs transition focus:outline-none ${
+                    ponytailLevel === lvl
+                      ? 'bg-cyan-500 text-white'
+                      : 'border border-gray-600 text-gray-400 hover:border-cyan-500 hover:text-cyan-400'
+                  }`}
+                >
+                  {lvl || 'off'}
+                </button>
+              ))}
+              {ponytailToggling && <span className="text-xs text-gray-500 self-center">updating...</span>}
             </div>
           </div>
 
