@@ -629,7 +629,7 @@ func main() {
 	r.Post("/api/login", handleLogin)
 	r.Get("/api/verify", handleVerify)
 
-	opencodePool := opencode.InitPool()
+	opencode.InitPool()
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -640,7 +640,7 @@ func main() {
 		json.Unmarshal(body, &modelCheck)
 
 		if strings.Contains(strings.ToLower(modelCheck.Model), "deepseek") {
-			opencode.Handle(w, r, opencodePool)
+			opencode.Handle(w, r)
 			return
 		}
 

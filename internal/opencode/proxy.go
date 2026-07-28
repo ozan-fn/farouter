@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,29 +22,12 @@ import (
 const (
 	proxyListURL = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt"
 	upstreamURL  = "https://opencode.ai/zen/v1/chat/completions"
+	pingTimeout  = 5 * time.Second
 )
 
-var webshareProxies = []string{
-	"kauhwjxz-1:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-2:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-3:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-4:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-5:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-6:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-7:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-8:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-9:nz8hufnch0pg@p.webshare.io:80",
-	"kauhwjxz-10:nz8hufnch0pg@p.webshare.io:80",
-}
-
-type Pool struct {
-	mu            sync.RWMutex
-	addrs         []string
-	idx           int
-	tr            *http.Transport
-	webshareIdx   int
-	websharetr    *http.Transport
-	directTried   bool
+type pingedProxy struct {
+	addr    string
+	latency time.Duration
 }
 
 func TransportFor(addr string) *http.Transport {
@@ -87,40 +71,6 @@ func DirectTransport() *http.Transport {
 	}
 }
 
-func (p *Pool) PickSticky() (*http.Transport, string) {
-	p.mu.RLock()
-	tr, addr := p.tr, p.addrs[p.idx]
-	p.mu.RUnlock()
-	return tr, addr
-}
-
-func (p *Pool) Rotate() (*http.Transport, string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for i := 0; i < len(p.addrs); i++ {
-		p.idx = (p.idx + 1) % len(p.addrs)
-		tr := TransportFor(p.addrs[p.idx])
-		if tr != nil {
-			p.tr = tr
-			log.Printf("opencode proxy: %s (%d/%d)", p.addrs[p.idx], p.idx+1, len(p.addrs))
-			return tr, p.addrs[p.idx]
-		}
-	}
-	p.tr = nil
-	return nil, ""
-}
-
-func (p *Pool) Refetch() {
-	newAddrs := FetchProxies()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(newAddrs) > 0 {
-		p.addrs = newAddrs
-		p.idx = -1
-		log.Printf("opencode proxy: refetched %d proxies", len(newAddrs))
-	}
-}
-
 func FetchProxies() []string {
 	c := &http.Client{Timeout: 10 * time.Second}
 	resp, err := c.Get(proxyListURL)
@@ -148,7 +98,73 @@ func FetchProxies() []string {
 	return addrs
 }
 
-func Handle(w http.ResponseWriter, r *http.Request, pool *Pool) {
+func pingProxy(addr string, ch chan<- pingedProxy) {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", addr, pingTimeout)
+	if err != nil {
+		return
+	}
+	conn.Close()
+	ch <- pingedProxy{addr: addr, latency: time.Since(start)}
+}
+
+func pingSortedProxies(addrs []string) []pingedProxy {
+	ch := make(chan pingedProxy, len(addrs))
+	for _, addr := range addrs {
+		go pingProxy(addr, ch)
+	}
+
+	timeout := time.After(pingTimeout)
+	var results []pingedProxy
+	for i := 0; i < len(addrs); i++ {
+		select {
+		case p := <-ch:
+			results = append(results, p)
+		case <-timeout:
+			goto done
+		}
+	}
+done:
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].latency < results[j].latency
+	})
+	return results
+}
+
+var (
+	mu          sync.Mutex
+	cachedAddrs []pingedProxy
+	lastWorking *pingedProxy
+)
+
+func fetchPingSorted() []pingedProxy {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(cachedAddrs) > 0 {
+		return cachedAddrs
+	}
+
+	log.Printf("opencode: fetching SOCKS5 list...")
+	raw := FetchProxies()
+	if len(raw) == 0 {
+		return nil
+	}
+	log.Printf("opencode: pinging %d proxies...", len(raw))
+	cachedAddrs = pingSortedProxies(raw)
+	lastWorking = nil
+	log.Printf("opencode: %d proxies alive", len(cachedAddrs))
+	return cachedAddrs
+}
+
+func invalidateCache() {
+	mu.Lock()
+	cachedAddrs = nil
+	lastWorking = nil
+	mu.Unlock()
+}
+
+func Handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	body, _ := io.ReadAll(r.Body)
@@ -180,42 +196,63 @@ func Handle(w http.ResponseWriter, r *http.Request, pool *Pool) {
 		io.Copy(w, resp.Body)
 	}
 
-	pool.mu.Lock()
-	if pool.websharetr == nil && pool.webshareIdx < len(webshareProxies) {
-		pool.websharetr = TransportFor(webshareProxies[pool.webshareIdx])
-	}
-	currentWebshare := pool.websharetr
-	currentAddr := ""
-	if pool.webshareIdx < len(webshareProxies) {
-		currentAddr = webshareProxies[pool.webshareIdx]
-	}
-	pool.mu.Unlock()
+	mu.Lock()
+	sticky := lastWorking
+	mu.Unlock()
 
-	if currentWebshare != nil {
-		resp, err := tryRequest(currentWebshare, "webshare:"+currentAddr)
-		if err == nil && resp.StatusCode != 429 && resp.StatusCode < 500 {
-			log.Printf("opencode: webshare %s OK", currentAddr)
+	if sticky != nil {
+		tr := TransportFor(sticky.addr)
+		if tr != nil {
+			resp, err := tryRequest(tr, "socks5:"+sticky.addr)
+			if err == nil && resp.StatusCode != 429 && resp.StatusCode < 500 {
+				log.Printf("opencode sticky %s (%v) OK", sticky.addr, sticky.latency)
+				writeResponse(resp)
+				return
+			}
+			if err != nil {
+				log.Printf("opencode sticky %s: %v — fallback", sticky.addr, err)
+			} else {
+				resp.Body.Close()
+				log.Printf("opencode sticky %s: HTTP %d — fallback", sticky.addr, resp.StatusCode)
+			}
+		}
+	}
+
+	sorted := fetchPingSorted()
+	if len(sorted) > 0 {
+		for _, p := range sorted {
+			tr := TransportFor(p.addr)
+			if tr == nil {
+				continue
+			}
+			resp, err := tryRequest(tr, "socks5:"+p.addr)
+			if err != nil {
+				log.Printf("opencode proxy %s (%v): %v", p.addr, p.latency, err)
+				continue
+			}
+			if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+				errBody, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				log.Printf("opencode proxy %s (%v): HTTP %d", p.addr, p.latency, resp.StatusCode)
+				if len(errBody) > 0 {
+					log.Printf("  body: %s", strings.TrimSpace(string(errBody)))
+				}
+				continue
+			}
+			log.Printf("opencode proxy %s (%v) OK", p.addr, p.latency)
+			mu.Lock()
+			lastWorking = &p
+			mu.Unlock()
 			writeResponse(resp)
 			return
 		}
-		if err != nil {
-			log.Printf("opencode webshare %s: %v — rotate", currentAddr, err)
-		} else {
-			resp.Body.Close()
-			log.Printf("opencode webshare %s: HTTP %d — rotate", currentAddr, resp.StatusCode)
-		}
-		pool.mu.Lock()
-		pool.webshareIdx++
-		if pool.webshareIdx < len(webshareProxies) {
-			pool.websharetr = TransportFor(webshareProxies[pool.webshareIdx])
-			log.Printf("opencode: rotated to webshare %s", webshareProxies[pool.webshareIdx])
-		} else {
-			pool.websharetr = nil
-		}
-		pool.mu.Unlock()
+	} else {
+		log.Printf("opencode: no proxies fetched")
 	}
 
-	log.Printf("opencode: webshare exhausted, trying direct")
+	log.Printf("opencode: all proxies failed, invalidating cache")
+	invalidateCache()
+	log.Printf("opencode: trying direct")
 	directTr := DirectTransport()
 	resp, err := tryRequest(directTr, "direct")
 	if err == nil && resp.StatusCode != 429 && resp.StatusCode < 500 {
@@ -230,61 +267,9 @@ func Handle(w http.ResponseWriter, r *http.Request, pool *Pool) {
 		log.Printf("opencode direct: HTTP %d", resp.StatusCode)
 	}
 
-	log.Printf("opencode: direct failed, trying SOCKS5 fetch")
-	pool.mu.RLock()
-	total := len(pool.addrs)
-	pool.mu.RUnlock()
-
-	tryProxy := func() (*http.Transport, string) {
-		tr, addr := pool.PickSticky()
-		if tr == nil {
-			tr, addr = pool.Rotate()
-			if tr == nil {
-				pool.Refetch()
-				tr, addr = pool.Rotate()
-			}
-		}
-		return tr, addr
-	}
-
-	for attempts := 0; attempts < total+2; attempts++ {
-		tr, addr := tryProxy()
-		if tr == nil {
-			break
-		}
-
-		resp, err := tryRequest(tr, "socks5:"+addr)
-		if err != nil {
-			log.Printf("opencode SOCKS5 %s: %v — rotate", addr, err)
-			pool.Rotate()
-			continue
-		}
-
-		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			errBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("opencode SOCKS5 %s: HTTP %d — rotate", addr, resp.StatusCode)
-			if len(errBody) > 0 {
-				log.Printf("  body: %s", strings.TrimSpace(string(errBody)))
-			}
-			pool.Rotate()
-			continue
-		}
-		log.Printf("opencode: SOCKS5 %s OK", addr)
-		writeResponse(resp)
-		return
-	}
-	http.Error(w, `{"error":"all methods failed"}`, 502)
+	http.Error(w, `{"error":"all proxies and direct failed"}`, 502)
 }
 
-func InitPool() *Pool {
-	log.Printf("opencode proxy: fetching SOCKS5 list...")
-	addrs := FetchProxies()
-	if len(addrs) == 0 {
-		log.Fatalf("opencode proxy: no proxies fetched")
-	}
-	log.Printf("opencode proxy: loaded %d proxies", len(addrs))
-	pool := &Pool{addrs: addrs, idx: -1}
-	pool.Rotate()
-	return pool
+func InitPool() {
+	log.Printf("opencode: proxy init done (ping on demand)")
 }
