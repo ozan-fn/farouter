@@ -22,7 +22,7 @@ import (
 const (
 	proxyListURL = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt"
 	upstreamURL  = "https://opencode.ai/zen/v1/chat/completions"
-	pingTimeout  = 5 * time.Second
+	pingTimeout  = 15 * time.Second
 )
 
 type pingedProxy struct {
