@@ -24,16 +24,16 @@ const (
 )
 
 var webshareProxies = []string{
-	"kauhwjxz-1:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-2:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-3:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-4:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-5:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-6:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-7:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-8:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-9:nz8hufnch0pg@p.webshare.io:1080",
-	"kauhwjxz-10:nz8hufnch0pg@p.webshare.io:1080",
+	"kauhwjxz-1:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-2:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-3:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-4:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-5:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-6:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-7:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-8:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-9:nz8hufnch0pg@p.webshare.io:80",
+	"kauhwjxz-10:nz8hufnch0pg@p.webshare.io:80",
 }
 
 type Pool struct {
