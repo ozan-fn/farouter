@@ -234,7 +234,7 @@ func validateIntegrity(reader io.Reader, maxBytes int, eventstreamDiag *Integrit
 	limited := io.LimitReader(reader, int64(maxBytes)+1)
 
 	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 65536), 65536)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	inspector := &shortFutureActionState{}
 	diagnostics := eventstreamDiag
