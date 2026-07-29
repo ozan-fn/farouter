@@ -142,7 +142,7 @@ func TestConvertMessagesWithToolCalls(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages, tools, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, tools, "claude-sonnet-4-5", false)
 
 	// Check that we have history entries
 	if len(result.history) == 0 {
@@ -245,7 +245,7 @@ func TestConvertMessagesAssistantEndWithToolCalls(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// History should end with assistantResponseMessage (the toolUses)
 	if len(result.history) == 0 {
@@ -312,7 +312,7 @@ func TestConvertMessagesToolResultIDMismatch(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// History should end with assistantResponseMessage with toolUses=[call_C]
 	if len(result.history) == 0 {
@@ -378,7 +378,7 @@ func TestConvertMessagesToolResultIDMismatchWithResults(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// History should end with assistantResponseMessage with toolUses=[call_B]
 	last := result.history[len(result.history)-1]
@@ -450,7 +450,7 @@ func TestConvertMessagesToolResultIDMatch(t *testing.T) {
 		{Role: "tool", Content: "package main", ToolCallID: "call_2"},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// History should end with assistantResponseMessage with toolUses=[call_2]
 	last := result.history[len(result.history)-1]
@@ -524,7 +524,7 @@ func TestConvertMessagesStaleCurrentMessageWithSyntheticToolResults(t *testing.T
 		},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// History should end with assistantResponseMessage with toolUses=[call_B]
 	if len(result.history) == 0 {
@@ -591,7 +591,7 @@ func TestConvertMessagesMultipleToolUsesWithoutResults(t *testing.T) {
 		},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// History should end with assistant with toolUses=[call_A, call_B]
 	last := result.history[len(result.history)-1]
@@ -667,7 +667,7 @@ func TestConvertMessagesMultiTurnToolCalls(t *testing.T) {
 		{Type: "function", Function: ToolFunction{Name: "readFile", Description: "Read file", Parameters: map[string]any{"type": "object", "properties": map[string]any{}, "required": []any{}}}},
 	}
 
-	result := convertMessages(messages, tools, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, tools, "claude-sonnet-4-5", false)
 
 	// Count toolUses in history
 	totalToolUses := 0
@@ -733,7 +733,7 @@ func TestConvertMessagesWithoutTools(t *testing.T) {
 		{Role: "user", Content: "how are you"},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	if len(result.history) != 2 {
 		t.Errorf("history len = %d, want 2", len(result.history))
@@ -764,7 +764,7 @@ func TestConvertMessagesWithToolCallsNoTools(t *testing.T) {
 		{Role: "user", Content: "thanks"},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// toolUses should be preserved even without tools parameter
 	foundToolUses := false
@@ -1390,11 +1390,11 @@ func TestConvertKiroTools(t *testing.T) {
 
 func TestBuildKiroRequestEmptyConversationID(t *testing.T) {
 	req := ChatRequest{
-		Model:    "claude-sonnet-4.5",
+		Model:    "claude-sonnet-4-5",
 		Messages: []Message{{Role: "user", Content: "hello world"}},
 	}
 
-	resolved := ResolvedModel{Upstream: "claude-sonnet-4.5"}
+	resolved := ResolvedModel{Upstream: "claude-sonnet-4-5"}
 	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "", "")
 	if err != nil {
 		t.Fatalf("buildKiroRequest: %v", err)
@@ -1414,11 +1414,11 @@ func TestBuildKiroRequestEmptyConversationID(t *testing.T) {
 
 func TestBuildKiroRequestProvidedConversationID(t *testing.T) {
 	req := ChatRequest{
-		Model:    "claude-sonnet-4.5",
+		Model:    "claude-sonnet-4-5",
 		Messages: []Message{{Role: "user", Content: "hello"}},
 	}
 
-	resolved := ResolvedModel{Upstream: "claude-sonnet-4.5"}
+	resolved := ResolvedModel{Upstream: "claude-sonnet-4-5"}
 	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "my-custom-id", "")
 	if err != nil {
 		t.Fatalf("buildKiroRequest: %v", err)
@@ -1437,7 +1437,7 @@ func TestBuildKiroRequestProvidedConversationID(t *testing.T) {
 func TestBuildKiroRequestHistoryIsSlice(t *testing.T) {
 	// Multi-turn messages to ensure history is present
 	req := ChatRequest{
-		Model: "claude-sonnet-4.5",
+		Model: "claude-sonnet-4-5",
 		Messages: []Message{
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "hi"},
@@ -1445,7 +1445,7 @@ func TestBuildKiroRequestHistoryIsSlice(t *testing.T) {
 		},
 	}
 
-	resolved := ResolvedModel{Upstream: "claude-sonnet-4.5"}
+	resolved := ResolvedModel{Upstream: "claude-sonnet-4-5"}
 	payload, err := buildKiroRequest(req, resolved, "arn:aws:test", "test-id", "")
 	if err != nil {
 		t.Fatalf("buildKiroRequest: %v", err)
@@ -1497,7 +1497,7 @@ func TestSerializeToolResultContent(t *testing.T) {
 func TestFullJSONRoundTrip(t *testing.T) {
 	// Simulate a real client request with tools, tool calls, and tool results
 	raw := `{
-		"model": "claude-sonnet-4.5",
+		"model": "claude-sonnet-4-5",
 		"stream": true,
 		"messages": [
 			{"role": "user", "content": "list files"},
@@ -1531,7 +1531,7 @@ func TestFullJSONRoundTrip(t *testing.T) {
 		t.Fatalf("tools len = %d, want 1", len(req.Tools))
 	}
 
-	result := convertMessages(req.Messages, req.Tools, "claude-sonnet-4.5", false)
+	result := convertMessages(req.Messages, req.Tools, "claude-sonnet-4-5", false)
 
 	// Must have at least one toolUse and one toolResult
 	totalToolUses := 0
@@ -1577,7 +1577,7 @@ func TestConvertMessagesWithImageOnly(t *testing.T) {
 		{Role: "user", Content: "what's in it?"},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// First user message should have "Image provided." fallback + images
 	if len(result.history) == 0 {
@@ -1614,7 +1614,7 @@ func TestConvertMessagesImageAgeOut(t *testing.T) {
 		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img7"}}}},
 	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
 
 	// Count user messages with images in history
 	historyWithImages := 0

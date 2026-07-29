@@ -102,7 +102,7 @@ func TestFixInvalidID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := fixInvalidID(tt.input)
+			got, _ := fixInvalidID(tt.input)
 			if got != tt.want {
 				t.Errorf("got=%v want=%v", got, tt.want)
 			}
@@ -281,8 +281,12 @@ func TestHasValuableContentWithToolCalls(t *testing.T) {
 
 func TestFixInvalidIDValid(t *testing.T) {
 	m := map[string]any{"id": "chatcmpl-abc123"}
-	if fixInvalidID(m) {
+	fixed, upstreamID := fixInvalidID(m)
+	if fixed {
 		t.Error("valid id should not be fixed")
+	}
+	if upstreamID != "chatcmpl-abc123" {
+		t.Errorf("upstreamID=%q", upstreamID)
 	}
 	if m["id"] != "chatcmpl-abc123" {
 		t.Errorf("id changed to %v", m["id"])

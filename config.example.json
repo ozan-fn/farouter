@@ -1,6 +1,7 @@
 {
   "password": "your-dashboard-password",
   "rtkEnabled": true,
+  "kiroThrottleMs": 0,
   "activeBatchIds": [],
   "currentSlot": 0,
   "stickyCount": 0,

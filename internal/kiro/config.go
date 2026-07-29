@@ -6,8 +6,9 @@ import "strings"
 
 const (
 	KIRO_STREAMING_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
-	KIRO_SDK_USER_AGENT   = "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0"
-	KIRO_AMZ_USER_AGENT   = "aws-sdk-js/3.0.0 kiro-ide/1.0.0"
+	KIRO_VERSION          = "0.11.107"
+	KIRO_SDK_USER_AGENT   = "AWS-SDK-JS/3.0.0 KiroIDE-" + KIRO_VERSION
+	KIRO_AMZ_USER_AGENT   = "aws-sdk-js/3.0.0 KiroIDE-" + KIRO_VERSION
 
 	KIRO_EXTERNAL_IDP_AUTH_METHOD      = "external_idp"
 	KIRO_EXTERNAL_IDP_TOKEN_TYPE_HEADER = "TokenType"
@@ -15,13 +16,16 @@ const (
 )
 
 // GetKiroServiceHeaders returns the standard headers for the Kiro streaming API.
+// Matches AIClient2API claude-kiro.js buildHeaders: x-amzn-codewhisperer-optout, x-amzn-kiro-agent-mode.
 func GetKiroServiceHeaders() map[string]string {
 	return map[string]string{
-		"Content-Type":  "application/json",
-		"Accept":        "application/vnd.amazon.eventstream",
-		"X-Amz-Target":  KIRO_STREAMING_TARGET,
-		"User-Agent":    KIRO_SDK_USER_AGENT,
-		"X-Amz-User-Agent": KIRO_AMZ_USER_AGENT,
+		"Content-Type":              "application/json",
+		"Accept":                    "application/vnd.amazon.eventstream",
+		"X-Amz-Target":              KIRO_STREAMING_TARGET,
+		"User-Agent":                KIRO_SDK_USER_AGENT,
+		"X-Amz-User-Agent":          KIRO_AMZ_USER_AGENT,
+		"x-amzn-codewhisperer-optout": "true",
+		"x-amzn-kiro-agent-mode":    "vibe",
 	}
 }
 
@@ -29,16 +33,25 @@ func GetKiroServiceHeaders() map[string]string {
 
 var KnownModels = []KiroModel{
 	{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", ContextLength: 1000000, MaxOutputTokens: 128000},
-	{ID: "claude-sonnet-4.5", Name: "Claude Sonnet 4.5", ContextLength: 200000, MaxOutputTokens: 64000},
-	{ID: "claude-haiku-4.5", Name: "Claude Haiku 4.5", ContextLength: 200000, MaxOutputTokens: 64000},
+	{ID: "claude-opus-5", Name: "Claude Opus 5", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "claude-opus-4-8", Name: "Claude Opus 4.8", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "claude-opus-4-5", Name: "Claude Opus 4.5", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "claude-opus-4-5-20251101", Name: "Claude Opus 4.5", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", ContextLength: 200000, MaxOutputTokens: 64000},
+	{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextLength: 200000, MaxOutputTokens: 64000},
+	{ID: "claude-sonnet-4-5-20250929", Name: "Claude Sonnet 4.5", ContextLength: 200000, MaxOutputTokens: 64000},
+	{ID: "claude-haiku-4-5", Name: "Claude Haiku 4.5", ContextLength: 200000, MaxOutputTokens: 64000},
+	{ID: "claude-haiku-4-5-20251001", Name: "Claude Haiku 4.5", ContextLength: 200000, MaxOutputTokens: 64000},
 	{ID: "deepseek-3.2", Name: "DeepSeek V3.2"},
 	{ID: "minimax-m2.5", Name: "MiniMax M2.5"},
 	{ID: "minimax-m2.1", Name: "MiniMax M2.1"},
 	{ID: "glm-5", Name: "GLM-5"},
 	{ID: "qwen3-coder-next", Name: "Qwen3 Coder Next"},
-	{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextLength: 272000, MaxOutputTokens: 128000},
-	{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", ContextLength: 272000, MaxOutputTokens: 128000},
-	{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", ContextLength: 272000, MaxOutputTokens: 128000},
+	{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", ContextLength: 1000000, MaxOutputTokens: 128000},
+	{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", ContextLength: 1000000, MaxOutputTokens: 128000},
 }
 
 // IsKnownModel returns true if the model ID is in the Kiro upstream catalog.

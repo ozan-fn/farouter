@@ -70,13 +70,14 @@ func hasValuableContent(chunk map[string]any) bool {
 	return (content != "") || (reasoning != "") || (len(toolCalls) > 0) || (finishReason != "") || (role != "")
 }
 
-func fixInvalidID(parsed map[string]any) bool {
+func fixInvalidID(parsed map[string]any) (fixed bool, upstreamID string) {
 	id, _ := parsed["id"].(string)
-	if id == "" || id == "chat" || id == "completion" || len(id) < 8 {
-		parsed["id"] = fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli())
-		return true
+	if id != "" && id != "chat" && id != "completion" && len(id) >= 8 {
+		return false, id
 	}
-	return false
+	newID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixMilli())
+	parsed["id"] = newID
+	return true, newID
 }
 
 func formatSSE(data map[string]any) string {
@@ -148,7 +149,14 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 				state.ttftAt = time.Now()
 			}
 
-			fixInvalidID(parsed)
+			fixed, upstreamID := fixInvalidID(parsed)
+			if !fixed && state.responseID == "" {
+				// First valid upstream ID → preserve it (AIClient2API style)
+				state.responseID = upstreamID
+			}
+			if state.responseID != "" {
+				parsed["id"] = state.responseID
+			}
 
 			if choices, ok := parsed["choices"].([]any); ok {
 				if parsed["object"] == nil || parsed["object"] == "" {

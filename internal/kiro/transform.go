@@ -349,6 +349,7 @@ type convertResult struct {
 //   - Adjacent same-role digabung
 //   - History diakhiri user, currentMessage juga user (di handle di buildKiroRequest)
 func convertMessages(messages []Message, tools []Tool, upstreamModel string, modelThinking bool) convertResult {
+	// "auto" → false (upstream decides image support)
 	supportsImages := strings.Contains(strings.ToLower(upstreamModel), "claude")
 
 	var history []map[string]any

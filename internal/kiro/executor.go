@@ -8,7 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"farouter/internal/rtk"
@@ -42,7 +45,51 @@ type TokenUsageCallback func(inputTokens, outputTokens int64)
 
 var GlobalTokenCallback TokenUsageCallback
 
+// ── Request throttle (AIClient2API acquireKiroRequestSlot) ────────────────
+// Prevents too-rapid requests to Kiro upstream. Default 0ms = no throttle.
+// Set KIRO_THROTTLE_MS env var to enable (e.g. 1000 for 1s between requests).
+var (
+	throttleMu       sync.Mutex
+	lastRequestStart time.Time
+	kiroThrottleMs   int
+)
+
+// SetKiroThrottleMs sets the minimum interval between Kiro requests.
+// Called from main.go after loading config.json.
+func SetKiroThrottleMs(ms int) {
+	if ms > 0 {
+		kiroThrottleMs = ms
+	}
+}
+
+func init() {
+	if v := os.Getenv("KIRO_THROTTLE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			kiroThrottleMs = n
+		}
+	}
+}
+
+// acquireThrottle blocks until minIntervalMs has elapsed since last request.
+func acquireThrottle(minIntervalMs int) {
+	if minIntervalMs <= 0 {
+		return
+	}
+	throttleMu.Lock()
+	elapsed := time.Since(lastRequestStart)
+	wait := time.Duration(minIntervalMs)*time.Millisecond - elapsed
+	if wait > 0 {
+		throttleMu.Unlock()
+		time.Sleep(wait)
+		throttleMu.Lock()
+	}
+	lastRequestStart = time.Now()
+	throttleMu.Unlock()
+}
+
 func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID, connectionID string, rtkEnabled bool) error {
+	acquireThrottle(0) // default 0ms; set >0 via config for rate limiting
+
 	resolved := ResolveModel(req.Model)
 
 	authMethod := creds.PSD.AuthMethod
@@ -229,6 +276,8 @@ func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseW
 // ExecuteWithIntegrityCheck runs Execute with the 9router integrity gate:
 // buffer full SSE, validate content, retry with repair instruction on ellipsis/short_final/invalid_tool.
 func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID, connectionID string, rtkEnabled bool) error {
+	acquireThrottle(kiroThrottleMs)
+
 	resolved := ResolveModel(req.Model)
 
 	authMethod := creds.PSD.AuthMethod

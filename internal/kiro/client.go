@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	requestTimeout    = 300 * time.Second
+	requestTimeout    = 120 * time.Second
 	defaultHTTPTimeout = 60 * time.Second
 )
 
@@ -85,8 +85,8 @@ func BuildKiroHeaders(creds Credentials) map[string]string {
 // BuildStreamingHeaders returns legacy-style headers for the streaming endpoint.
 func BuildStreamingHeaders(creds Credentials, host string) map[string]string {
 	headers := map[string]string{
-		"User-Agent":     "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#22.22.0 api/codewhispererstreaming#3.0.0 m/E KiroIDE-0.11.107",
-		"x-amz-user-agent": "aws-sdk-js/3.0.0 KiroIDE-0.11.107",
+		"User-Agent":       "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#22.22.0 api/codewhispererstreaming#3.0.0 m/E KiroIDE-" + KIRO_VERSION,
+		"x-amz-user-agent": "aws-sdk-js/3.0.0 KiroIDE-" + KIRO_VERSION,
 	}
 	if host != "" {
 		headers["Host"] = host

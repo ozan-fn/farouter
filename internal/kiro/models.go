@@ -23,6 +23,10 @@ func ResolveModel(model string) ResolvedModel {
 	if model == "" {
 		model = AutoModel
 	}
+	// Pass "auto" through to upstream as-is (Kiro upstream resolves it)
+	if model == "auto" {
+		return ResolvedModel{Upstream: "auto", Agentic: agentic, Thinking: thinking}
+	}
 
 	return ResolvedModel{Upstream: model, Agentic: agentic, Thinking: thinking}
 }
@@ -110,8 +114,11 @@ func supportsAdditionalFields(model string) bool {
 	if !strings.Contains(m, "claude") {
 		return false
 	}
+	// Match both old dot format (claude-sonnet-4.5) and new dash format (claude-sonnet-4-5)
+	// Extract the version segment (e.g. "4-5" or "4.5") and parse major.minor
 	parts := strings.Split(m, "-")
 	for _, p := range parts {
+		// Dot format: "4.5" → major=4, minor=5
 		if len(p) >= 3 && p[1] == '.' {
 			major := int(p[0] - '0')
 			if major > 4 {
@@ -121,6 +128,19 @@ func supportsAdditionalFields(model string) bool {
 				minor := 0
 				fmt.Sscanf(p[2:], "%d", &minor)
 				return minor > 5
+			}
+		}
+		// Dash format: "4-5" → major=4, minor=5
+		if idx := strings.Index(p, "-"); idx > 0 {
+			major := 0
+			minor := 0
+			fmt.Sscanf(p[:idx], "%d", &major)
+			fmt.Sscanf(p[idx+1:], "%d", &minor)
+			if major > 4 {
+				return true
+			}
+			if major == 4 && minor > 5 {
+				return true
 			}
 		}
 	}

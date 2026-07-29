@@ -61,6 +61,7 @@ type Config struct {
 	CurrentSlot     int               `json:"currentSlot,omitempty"`
 	StickyCount     int               `json:"stickyCount,omitempty"`
 	RTKEnabled      bool              `json:"rtkEnabled"`
+	KiroThrottleMs  int               `json:"kiroThrottleMs,omitempty"`
 	CavemanLevel    string            `json:"cavemanLevel,omitempty"`
 	PonytailLevel   string            `json:"ponytailLevel,omitempty"`
 	Accounts        []AccountConfig   `json:"accounts"`
@@ -514,6 +515,9 @@ func loadConfig() {
 	}
 	if cfg.PonytailLevel != "" {
 		ponytailLevel = cfg.PonytailLevel
+	}
+	if cfg.KiroThrottleMs > 0 {
+		kiro.SetKiroThrottleMs(cfg.KiroThrottleMs)
 	}
 
 	cfgPassword = cfg.Password

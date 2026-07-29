@@ -13,7 +13,7 @@ const (
 	DefaultProfileArnBuilderID = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 	DefaultProfileArnSocial    = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
 
-	AutoModel = "claude-sonnet-4.5"
+	AutoModel = "auto"
 
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
