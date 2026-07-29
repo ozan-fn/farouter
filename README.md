@@ -1,33 +1,33 @@
-# farouter
+# 🚀 farouter
 
 High-performance Go proxy for Kiro accounts. Manages rotation, token refresh, quota tracking, integrity validation, and web dashboard.
 
 ---
 
-## Features
+## ✨ Features
 
-- **Account rotation**: 3-slot active batch + standby queue for unlimited accounts
-- **Sticky routing**: 3 requests per account before rotation
-- **Auto failover**: Handles exhaustion (402) and suspension (403)
-- **Token refresh**: Background keepalive every 6 hours
-- **Auth methods**: OAuth (Builder ID, Google, GitHub), API keys, External IdP, IAM Identity Center
-- **Integrity validation**: Auto-repair incomplete responses, ellipsis detection, short future action detection
-- **Region-aware routing**: Auto-regionalization based on token region
-- **RTK processing**: Optional tool message processing (configurable)
-- **Images**: OpenAI and Claude formats supported
-- **Thinking mode**: Adaptive effort levels (minimal/low/medium/high/xhigh/max)
-- **Agentic mode**: Chunked write protocol for file operations
-- **Web dashboard**: React 19 + Tailwind v4 with real-time status
-- **Zero external deps**: Pure Go with embedded web assets (~8MB)
+- 🔄 **Account rotation**: 3-slot active batch + standby queue for unlimited accounts
+- 📌 **Sticky routing**: 3 requests per account before rotation
+- ⚡ **Auto failover**: Handles exhaustion (402) and suspension (403)
+- 🔄 **Token refresh**: Background keepalive every 6 hours
+- 🔐 **Auth methods**: OAuth (Builder ID, Google, GitHub), API keys, External IdP, IAM Identity Center
+- 🛡️ **Integrity validation**: Auto-repair incomplete responses, ellipsis detection, short future action detection
+- 🌍 **Region-aware routing**: Auto-regionalization based on token region
+- 🔧 **RTK processing**: Optional tool message processing (configurable)
+- 🖼️ **Images**: OpenAI and Claude formats supported
+- 🧠 **Thinking mode**: Adaptive effort levels (minimal/low/medium/high/xhigh/max)
+- 🤖 **Agentic mode**: Chunked write protocol for file operations
+- 📊 **Web dashboard**: React 19 + Tailwind v4 with real-time status
+- ⚙️ **Zero external deps**: Pure Go with embedded web assets (~8MB)
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
-### Prerequisites
+### 📋 Prerequisites
 - Go 1.21+ (build from source) OR download pre-built binary
 
-### Install
+### 📦 Install
 
 ```bash
 # Build from source
@@ -39,7 +39,7 @@ wget https://github.com/your-repo/farouter/releases/latest/download/farouter
 chmod +x farouter
 ```
 
-### Configure
+### ⚙️ Configure
 
 Create `config.json`:
 
@@ -59,23 +59,23 @@ Create `config.json`:
 ```
 
 **Get Kiro refresh tokens:**
-- Extract from Kiro IDE DevTools in browser
-- Or use OAuth flow to authenticate
+- 🔑 Extract from Kiro IDE DevTools in browser
+- 🔓 Or use OAuth flow to authenticate
 
 **Start server:**
 ```bash
 ./farouter
 ```
 
-Access at:
-- API: `http://localhost:20180`
-- Dashboard: `http://localhost:20180` (login with password)
+📍 Access at:
+- 🔌 API: `http://localhost:20180`
+- 📱 Dashboard: `http://localhost:20180` (login with password)
 
 ---
 
-## Usage
+## 💻 Usage
 
-### OpenAI-Compatible API
+### 🌐 OpenAI-Compatible API
 
 ```bash
 curl -X POST http://localhost:20180/v1/chat/completions \
@@ -87,7 +87,7 @@ curl -X POST http://localhost:20180/v1/chat/completions \
   }'
 ```
 
-### Supported Models
+### 📋 Supported Models
 
 | Model | Description |
 |-------|-------------|
@@ -98,10 +98,10 @@ curl -X POST http://localhost:20180/v1/chat/completions \
 | `kr/claude-sonnet-4.5-thinking-agentic` | Both thinking + agentic |
 
 **Suffixes:**
-- `-thinking`: Enable adaptive thinking
-- `-agentic`: Enable file operation tools
+- 🧠 `-thinking`: Enable adaptive thinking
+- 🤖 `-agentic`: Enable file operation tools
 
-### Tool Calls
+### 🔨 Tool Calls
 
 Auto-converts OpenAI format to Kiro:
 
@@ -127,12 +127,12 @@ Auto-converts OpenAI format to Kiro:
 ```
 
 **Features:**
-- Orphaned tool results reconciliation
-- MCP nested tool detection
-- Tool documentation injection (>10KB threshold)
-- Invalid tool call auto-repair
+- 🔗 Orphaned tool results reconciliation
+- 📦 MCP nested tool detection
+- 📚 Tool documentation injection (>10KB threshold)
+- 🔧 Invalid tool call auto-repair
 
-### Images
+### 🖼️ Images
 
 Send images in OpenAI or Claude format:
 
@@ -165,13 +165,13 @@ Send images in OpenAI or Claude format:
 }
 ```
 
-**Note:** Images only work with Claude models. HTTP URLs converted to text placeholders.
+**Note:** 📌 Images only work with Claude models. HTTP URLs converted to text placeholders.
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
-### config.json Fields
+### 📝 config.json Fields
 
 ```json
 {
@@ -201,7 +201,7 @@ Send images in OpenAI or Claude format:
 
 Farouter is fully aligned with VansRouter's Kiro provider specifications.
 
-### Status
+### ✅ Status
 
 | Component | Status | Details |
 |-----------|--------|---------|
@@ -212,7 +212,7 @@ Farouter is fully aligned with VansRouter's Kiro provider specifications.
 | **Session Fingerprint** | ✅ | SHA256 hash per-account |
 | **EventStream Protocol** | ✅ | AWS binary + CRC32 validation |
 
-### Thinking Budget Changes
+### 📊 Thinking Budget Changes
 
 ```
 Before (Farouter custom):
@@ -229,7 +229,7 @@ Effort mapping:
   max:     -       → 128,000 (NEW)
 ```
 
-### Alignment Tests
+### 🧪 Alignment Tests
 
 **59 comprehensive tests** verify VansRouter compatibility:
 
@@ -242,9 +242,9 @@ All passing ✅ with no performance regressions.
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
-### Account Rotation
+### 🔄 Account Rotation
 
 ```
 Active Batch (3 slots)
@@ -269,7 +269,7 @@ Standby Queue
 5. If all exhausted: reset non-suspended, retry once
 6. Auto-reactivate when `resetAt` expires
 
-### Request Flow
+### 🔀 Request Flow
 
 ```
 Client Request (OpenAI format)
@@ -311,7 +311,7 @@ Client Request (OpenAI format)
 Client Response (OpenAI SSE format)
 ```
 
-### Components
+### 📦 Components
 
 | Component | File | Purpose |
 |-----------|------|---------|
@@ -330,17 +330,17 @@ Client Response (OpenAI SSE format)
 
 ---
 
-## Integrity Validation
+## 🛡️ Integrity Validation
 
 Auto-detects and repairs incomplete responses.
 
-### Detection
+### 🔍 Detection
 
 1. **Ellipsis-only**: `...` or `…` with no content
 2. **Short future action**: "I'll check now", "Let me verify", etc. without result
 3. **Invalid tool calls**: Malformed `tool_call` wrapper
 
-### Repair Process
+### 🔧 Repair Process
 
 1. Buffer response (up to 8MB)
 2. Analyze terminal state
@@ -358,26 +358,26 @@ Auto-detects and repairs incomplete responses.
 
 ---
 
-## Web Dashboard
+## 📊 Web Dashboard
 
 Access at `http://localhost:20180` after login.
 
 **Features:**
-- Account overview (status, quota, auth method)
-- Active batch (3 accounts + sticky count)
-- Standby queue (remaining accounts)
-- Manual actions (add, remove, refresh token, reset)
-- Real-time updates
+- 👁️ Account overview (status, quota, auth method)
+- 🎯 Active batch (3 accounts + sticky count)
+- 📋 Standby queue (remaining accounts)
+- 🎮 Manual actions (add, remove, refresh token, reset)
+- 🔄 Real-time updates
 
 **Tech:**
-- React 19 + React Router v8
-- Tailwind v4 (CSS-first)
-- Brotli compression (level 11, ~70% reduction)
-- Session-based auth (HTTP-only cookies)
+- ⚛️ React 19 + React Router v8
+- 🎨 Tailwind v4 (CSS-first)
+- 📦 Brotli compression (level 11, ~70% reduction)
+- 🔐 Session-based auth (HTTP-only cookies)
 
 ---
 
-## Testing
+## 🧪 Testing
 
 ```bash
 cd internal/kiro
@@ -385,17 +385,17 @@ go test -v
 ```
 
 **Coverage:**
-- Message deserialization
-- SSE parsing
-- Tool results reconciliation
-- Tool validation
-- Integrity logic
+- ✅ Message deserialization
+- ✅ SSE parsing
+- ✅ Tool results reconciliation
+- ✅ Tool validation
+- ✅ Integrity logic
 
 ---
 
-## Development
+## 🔨 Development
 
-### Structure
+### 📁 Structure
 
 ```
 farouter/
@@ -432,7 +432,7 @@ farouter/
     └── package.json
 ```
 
-### Build Web Assets
+### 🏗️ Build Web Assets
 
 ```bash
 cd web
@@ -442,63 +442,63 @@ npm run build  # Outputs to public/ with .br compression
 
 Assets embedded at compile time via `//go:embed`.
 
-### Environment Variables
+### 🌍 Environment Variables
 
-- `KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES`: Max buffer (default: 8MB)
-- `KIRO_TOOL_CALL_REPAIR_TTFT_TIMEOUT_MS`: TTFT timeout (default: 30s)
-- `KIRO_TOOL_CALL_REPAIR_STALL_TIMEOUT_MS`: Stall timeout (default: 30s)
-- `KIRO_TOOL_CALL_REPAIR`: Set to `"false"` to disable repair
+- 🔧 `KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES`: Max buffer (default: 8MB)
+- ⏱️ `KIRO_TOOL_CALL_REPAIR_TTFT_TIMEOUT_MS`: TTFT timeout (default: 30s)
+- ⏱️ `KIRO_TOOL_CALL_REPAIR_STALL_TIMEOUT_MS`: Stall timeout (default: 30s)
+- ❌ `KIRO_TOOL_CALL_REPAIR`: Set to `"false"` to disable repair
 
 ---
 
-## Security
+## 🔐 Security
 
-- Session-based auth (HTTP-only cookies, 32-byte random tokens)
-- Password-protected dashboard
-- No credential logging
-- Auto token refresh
-- CORS enabled for `/v1/*`
+- 🔒 Session-based auth (HTTP-only cookies, 32-byte random tokens)
+- 🔑 Password-protected dashboard
+- 🚫 No credential logging
+- 🔄 Auto token refresh
+- 🌐 CORS enabled for `/v1/*`
 
 **Best practices:**
-- Use strong passwords
-- Store `config.json` securely (contains refresh tokens)
-- Run behind reverse proxy (nginx/caddy) for HTTPS
-- Rotate refresh tokens periodically
+- 💪 Use strong passwords
+- 📁 Store `config.json` securely (contains refresh tokens)
+- 🖥️ Run behind reverse proxy (nginx/caddy) for HTTPS
+- 🔁 Rotate refresh tokens periodically
 
 ---
 
-## Status Codes
+## 📡 Status Codes
 
 | Code | Meaning | Action |
 |------|---------|--------|
-| 200 | Success | Done |
-| 400 | Bad Request | Invalid format |
-| 401 | Unauthorized | Missing/invalid session |
-| 402 | Payment Required | Quota exhausted → rotate |
-| 403 | Forbidden | Suspended → try next |
-| 500 | Internal Error | Check logs |
-| 503 | Service Unavailable | All exhausted/suspended |
+| 200 | ✅ Success | Done |
+| 400 | ⚠️ Bad Request | Invalid format |
+| 401 | 🔒 Unauthorized | Missing/invalid session |
+| 402 | 💳 Payment Required | Quota exhausted → rotate |
+| 403 | 🚫 Forbidden | Suspended → try next |
+| 500 | ❌ Internal Error | Check logs |
+| 503 | 🔥 Service Unavailable | All exhausted/suspended |
 
 **Exhaustion:** 402 → mark exhausted → replace from standby → retry
 **Suspension:** 403 → mark suspended → try next (manual reset needed)
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-1. Fork repo
-2. Create feature branch
-3. Add tests
-4. Update README if user-facing
-5. Keep commits atomic
-6. Open PR
-
----
-
-## License
-
-MIT License - see LICENSE file for details
+1. 🍴 Fork repo
+2. 🌿 Create feature branch
+3. ✅ Add tests
+4. 📖 Update README if user-facing
+5. 📦 Keep commits atomic
+6. 🔀 Open PR
 
 ---
 
-**Aligned with VansRouter. Built for reliable AI routing.**
+## 📄 License
+
+📋 MIT License - see LICENSE file for details
+
+---
+
+**🎯 Aligned with VansRouter. Built for reliable AI routing.**
