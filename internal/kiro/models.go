@@ -67,23 +67,31 @@ func IsGPTModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "gpt-5.6")
 }
 
-// ResolveThinkingBudget — VansRouter: kiroConstants.js resolveKiroThinkingBudget()
+// ResolveThinkingBudget — VansRouter: open-sse/translator/concerns/thinking.js effortToBudget()
+// Web-standard effort levels: https://www.anthropic.com/docs
+// Maps effort levels to token budgets per Anthropic/Gemini standards
 func ResolveThinkingBudget(effort string, model string) int {
 	if effort != "" {
 		switch strings.ToLower(effort) {
 		case "none", "off", "disabled":
-			return -1
+			return -1  // Thinking disabled
+		case "minimal":
+			return 512
 		case "low":
-			return 4000
+			return 1024  // Changed from 4000 to match VansRouter web-standard
 		case "medium":
-			return 8000
-		case "high", "xhigh", "max":
-			return ThinkingBudgetDefault
+			return 8192  // Changed from 8000 to match VansRouter
+		case "high":
+			return 24576  // Changed from ThinkingBudgetDefault to match VansRouter
+		case "xhigh":
+			return 32768  // New: web-standard value
+		case "max":
+			return 128000  // New: web-standard maximum
 		}
 	}
 	m := strings.ToLower(model)
 	if strings.Contains(m, "thinking") || strings.Contains(m, "-reason") {
-		return ThinkingBudgetDefault
+		return ThinkingBudgetDefault  // 16000
 	}
 	return -1
 }

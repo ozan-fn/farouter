@@ -28,9 +28,11 @@ import (
 const (
 	agenticSuffix       = "-agentic"
 	thinkingSuffix      = "-thinking"
-	ThinkingBudgetDefault = 20000
-	ThinkingBudgetMin     = 1024
-	ThinkingBudgetMax     = 24576
+	// VansRouter ref: open-sse/config/kiroConstants.js:41
+	// Web-standard thinking budget: https://www.anthropic.com/docs
+	ThinkingBudgetDefault = 16000  // Changed from 20000 to match VansRouter
+	ThinkingBudgetMin     = 1      // Changed from 1024 to match VansRouter (allow any positive)
+	ThinkingBudgetMax     = 32000  // Changed from 24576 to match VansRouter
 	DefaultContextLength  = 200000
 
 	DefaultProfileArnBuilderID = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCXXXXX"
