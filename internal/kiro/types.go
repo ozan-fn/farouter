@@ -7,7 +7,9 @@ import (
 const (
 	agenticSuffix       = "-agentic"
 	thinkingSuffix      = "-thinking"
-	ThinkingBudgetDefault = 16000
+	ThinkingBudgetDefault = 20000
+	ThinkingBudgetMin     = 1024
+	ThinkingBudgetMax     = 24576
 	DefaultContextLength  = 200000
 
 	DefaultProfileArnBuilderID = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"

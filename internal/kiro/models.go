@@ -40,13 +40,13 @@ func DefaultProfileArn(authMethod string) string {
 
 func BuildThinkingSystemPrefix(budget int) string {
 	if budget <= 0 {
-		budget = 20000
+		budget = ThinkingBudgetDefault
 	}
-	if budget < 1024 {
-		budget = 1024
+	if budget < ThinkingBudgetMin {
+		budget = ThinkingBudgetMin
 	}
-	if budget > 24576 {
-		budget = 24576
+	if budget > ThinkingBudgetMax {
+		budget = ThinkingBudgetMax
 	}
 	return fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", budget)
 }
