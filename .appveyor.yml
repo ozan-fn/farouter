@@ -9,9 +9,13 @@ branches:
 # Menonaktifkan pembacaan file solusi Visual Studio otomatis
 build: off
 
+# Caching folder modul Go dan kompilasi build
+cache:
+  - /root/go/pkg/mod             # Cache untuk Go modules/dependencies
+  - /root/.cache/go-build        # Cache untuk hasil kompilasi Go
+
 # Langkah setup environment dan kompilasi Go
 build_script:
-  # 1. Pastikan Go terinstall dan atur cache bawaan
   - go version
   - CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
 
