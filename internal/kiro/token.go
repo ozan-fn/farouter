@@ -12,9 +12,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
-const socialAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
+const (
+	socialAuthService     = "https://prod.us-east-1.auth.desktop.kiro.dev"
+	TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000 // 5 min buffer before expiry
+)
 
 // RefreshToken — VansRouter: kiro.js refreshCredentials() → tokenRefresh.js
 func RefreshToken(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
@@ -49,6 +53,37 @@ func refreshSocial(ctx context.Context, refreshToken string) (*TokenResult, erro
 		"refreshToken": refreshToken,
 	})
 	return doRefreshPost(ctx, socialAuthService+"/refreshToken", payload)
+}
+
+// isUnrecoverableRefreshError checks if a refresh error is terminal.
+// VansRouter ref: tokenRefresh.js isUnrecoverableRefreshError()
+func isUnrecoverableRefreshError(result *TokenResult) bool {
+	if result == nil {
+		return false
+	}
+	switch result.Error {
+	case "unrecoverable_refresh_error", "refresh_token_reused", "invalid_request", "invalid_grant":
+		return true
+	}
+	return false
+}
+
+// refreshWithRetry retries a refresh function with exponential backoff.
+// VansRouter ref: tokenRefresh.js refreshWithRetry()
+func refreshWithRetry(refreshFn func() (*TokenResult, error), maxRetries int) (*TokenResult, error) {
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		result, err := refreshFn()
+		if err == nil && result != nil {
+			return result, nil
+		}
+	}
+	return nil, fmt.Errorf("token refresh failed after %d attempts", maxRetries)
 }
 
 // doRefreshPost — Go-specific HTTP POST helper

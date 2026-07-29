@@ -88,6 +88,90 @@ func ResolveThinkingBudget(effort string, model string) int {
 	return -1
 }
 
+// containsThinkingModeTag checks if any message in the body contains
+// <thinking_mode> tag. VansRouter ref: kiroConstants.js containsThinkingModeTag()
+func containsThinkingModeTag(req ChatRequest) bool {
+	for _, msg := range req.Messages {
+		if msg.Role != RoleSystem && msg.Role != RoleUser {
+			continue
+		}
+		if s, ok := msg.Content.(string); ok {
+			if strings.Contains(s, "<thinking_mode>enabled</thinking_mode>") ||
+				strings.Contains(s, "<thinking_mode>interleaved</thinking_mode>") {
+				return true
+			}
+		} else if arr, ok := msg.Content.([]any); ok {
+			for _, part := range arr {
+				if m, ok := part.(map[string]any); ok {
+					if txt, ok := m["text"].(string); ok {
+						if strings.Contains(txt, "<thinking_mode>enabled</thinking_mode>") ||
+							strings.Contains(txt, "<thinking_mode>interleaved</thinking_mode>") {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// ResolveKiroThinkingBudgetFromBody parses thinking budget from request body,
+// headers, and model. VansRouter ref: kiroConstants.js resolveKiroThinkingBudget()
+func ResolveKiroThinkingBudgetFromBody(req ChatRequest, model string) *int {
+	// Check reasoning_effort
+	effort := strings.ToLower(req.ReasoningEffort)
+	if effort == "" && req.OutputConfig != nil {
+		effort = strings.ToLower(req.OutputConfig.Effort)
+	}
+	if effort != "" {
+		switch effort {
+		case "none", "off", "disabled":
+			return nil // null = no thinking
+		case "low":
+			v := 4000
+			return &v
+		case "medium":
+			v := 8000
+			return &v
+		case "high", "xhigh", "max":
+			v := ThinkingBudgetDefault
+			return &v
+		}
+	}
+
+	// Check thinking block
+	if req.Thinking != nil {
+		switch req.Thinking.Type {
+		case "enabled":
+			if req.Thinking.BudgetTokens > 0 {
+				v := req.Thinking.BudgetTokens
+				return &v
+			}
+			v := ThinkingBudgetDefault
+			return &v
+		case "adaptive":
+			v := ThinkingBudgetDefault
+			return &v
+		}
+	}
+
+	// Check <thinking_mode> tags in messages
+	if containsThinkingModeTag(req) {
+		v := ThinkingBudgetDefault
+		return &v
+	}
+
+	// Check model name hints
+	m := strings.ToLower(model)
+	if strings.Contains(m, "thinking") || strings.Contains(m, "-reason") {
+		v := ThinkingBudgetDefault
+		return &v
+	}
+
+	return nil // no thinking
+}
+
 // BuildAdditionalModelRequestFields — VansRouter: kiroConstants.js buildKiroAdditionalModelRequestFields()
 func BuildAdditionalModelRequestFields(effort string, model string) map[string]any {
 	e := normalizeEffort(effort)

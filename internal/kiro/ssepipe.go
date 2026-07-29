@@ -22,11 +22,19 @@ import (
 // SSE headers — VansRouter: sseConstants.js SSE_DONE / SSE_HEADERS_CORS
 const SSEDone = "data: [DONE]\n\n"
 
+// SSEHeadersCORS — VansRouter: sseConstants.js SSE_HEADERS_CORS
 var SSEHeadersCORS = map[string]string{
 	"Content-Type":           "text/event-stream",
 	"Cache-Control":         "no-cache",
 	"Connection":            "keep-alive",
 	"Access-Control-Allow-Origin": "*",
+}
+
+// SSEHeadersNoBuffer — VansRouter: sseConstants.js SSE_HEADERS_NO_BUFFER (for nginx proxy)
+var SSEHeadersNoBuffer = map[string]string{
+	"Content-Type":      "text/event-stream",
+	"Cache-Control":     "no-cache",
+	"X-Accel-Buffering": "no",
 }
 
 // ssePassthroughState tracks accumulated content/usage during SSE passthrough.

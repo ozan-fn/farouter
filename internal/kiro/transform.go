@@ -43,7 +43,20 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 	upstreamModel := resolved.Upstream
 	conversationID = ensureConversationID(conversationID, req.Messages)
 
-	result := convertMessages(req.Messages, req.Tools, upstreamModel, resolved.Thinking)
+	// VansRouter: flatten tool interactions when no tools provided
+	// (avoids Kiro "tools required" 400 validation error)
+	clientProvidedTools := len(req.Tools) > 0
+	msgs := req.Messages
+	if !clientProvidedTools {
+		msgs = flattenToolInteractions(msgs)
+	}
+
+	result := convertMessages(msgs, req.Tools, upstreamModel, resolved.Thinking)
+
+	// VansRouter: reconcile orphaned toolResults after message conversion
+	if clientProvidedTools {
+		reconcileOrphanedToolResults(result.history, result.currentMessage)
+	}
 	history := result.history
 	currentMsg := result.currentMessage
 
@@ -53,24 +66,17 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 	}
 
 	// ── System prompt (VansRouter pattern) ──
-	// 1. Thinking prefix jika ada
+	// 1. Thinking prefix dari body/effort/model/thinking tag (VansRouter resolusi)
 	// 2. Client system prompt (dari messages role=system)
 	// 3. Agentic prompt jika model -agentic
 
 	var sysParts []string
 
-	if resolved.Thinking {
-		budget := ThinkingBudgetDefault
-		if req.Thinking != nil && req.Thinking.BudgetTokens > 0 {
-			budget = req.Thinking.BudgetTokens
-		}
-		sysParts = append(sysParts, BuildThinkingSystemPrefix(budget))
-	} else {
-		effort := resolveKiroEffort(req)
-		if effort != "" {
-			budget := ThinkingLengthForEffort(effort)
-			sysParts = append(sysParts, BuildThinkingSystemPrefix(budget))
-		}
+	budget := ResolveKiroThinkingBudgetFromBody(req, upstreamModel)
+	if budget != nil {
+		sysParts = append(sysParts, BuildThinkingSystemPrefix(*budget))
+	} else if resolved.Thinking {
+		sysParts = append(sysParts, BuildThinkingSystemPrefix(ThinkingBudgetDefault))
 	}
 
 	// NOTE: systemContent NOT added to sysParts karena sudah di-wrap dalam
@@ -625,6 +631,163 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 }
 
 
+
+// VansRouter ref: openai-to-kiro.js flattenToolInteractions collapses tool calls/results to plain text when
+// the client did NOT send tools. This keeps the request honest and sidesteps
+// Kiro's "tools required" 400 validation error.
+// VansRouter ref: openai-to-kiro.js flattenToolInteractions()
+func flattenToolInteractions(messages []Message) []Message {
+	toolResultToText := func(content any) string {
+		if arr, ok := content.([]any); ok {
+			var parts []string
+			for _, c := range arr {
+				if m, ok := c.(map[string]any); ok {
+					if txt, ok := m["text"].(string); ok {
+						parts = append(parts, txt)
+					}
+				} else if s, ok := c.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			return strings.Join(parts, "\n")
+		} else if s, ok := content.(string); ok {
+			return s
+		}
+		return ""
+	}
+
+	toolCallToText := func(name string, input any) string {
+		argStr := "{}"
+		if s, ok := input.(string); ok {
+			argStr = s
+		} else if input != nil {
+			if b, err := json.Marshal(input); err == nil {
+				argStr = string(b)
+			}
+		}
+		return fmt.Sprintf("[Tool call: %s(%s)]", name, argStr)
+	}
+
+	out := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleTool:
+			text := toolResultToText(msg.Content)
+			out = append(out, Message{Role: RoleUser, Content: text})
+
+		case RoleAssistant:
+			var parts []string
+			if arr, ok := msg.Content.([]any); ok {
+				for _, c := range arr {
+					if m, ok := c.(map[string]any); ok {
+						t, _ := m["type"].(string)
+						switch t {
+						case "tool_use":
+							name, _ := m["name"].(string)
+							parts = append(parts, toolCallToText(name, m["input"]))
+						case "text":
+							if txt, ok := m["text"].(string); ok {
+								parts = append(parts, txt)
+							}
+						}
+					}
+				}
+			} else if s, ok := msg.Content.(string); ok {
+				parts = append(parts, s)
+			}
+			for _, tc := range msg.ToolCalls {
+				parts = append(parts, toolCallToText(tc.Function.Name, tc.Function.Arguments))
+			}
+			combined := strings.Join(parts, "\n")
+			if combined == "" {
+				combined = "..."
+			}
+			out = append(out, Message{Role: RoleAssistant, Content: combined})
+
+		default:
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+// reconcileOrphanedToolResults removes orphaned toolResults whose toolUseId
+// has no matching toolUse in any assistant message, and folds their content
+// back into the user message as text. This handles client-side compaction
+// where the assistant message with tool_use is removed but the tool_result remains.
+// VansRouter ref: openai-to-kiro.js reconcileOrphanedToolResults()
+func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[string]any) {
+	// Collect valid toolUseIds from assistant messages in history
+	validIDs := make(map[string]bool)
+	for _, h := range history {
+		arm, ok := h["assistantResponseMessage"].(map[string]any)
+		if !ok {
+			continue
+		}
+		tuArr, _ := arm["toolUses"].([]any)
+		for _, tu := range tuArr {
+			if tuMap, ok := tu.(map[string]any); ok {
+				if id, ok := tuMap["toolUseId"].(string); ok && id != "" {
+					validIDs[id] = true
+				}
+			}
+		}
+	}
+
+	// Process both history and currentMessage
+	carriers := append(history, currentMessage)
+	for _, item := range carriers {
+		if item == nil {
+			continue
+		}
+		uim, ok := item["userInputMessage"].(map[string]any)
+		if !ok {
+			continue
+		}
+		ctx, ok := uim["userInputMessageContext"].(map[string]any)
+		if !ok {
+			continue
+		}
+		trArr, ok := ctx["toolResults"].([]any)
+		if !ok || len(trArr) == 0 {
+			continue
+		}
+
+		var kept []any
+		var salvaged []string
+		for _, tr := range trArr {
+			if trMap, ok := tr.(map[string]any); ok {
+				if id, ok := trMap["toolUseId"].(string); ok && validIDs[id] {
+					kept = append(kept, tr)
+				} else {
+					text := serializeToolResultContent(trMap["content"])
+					salvaged = append(salvaged, text)
+				}
+			}
+		}
+
+		if len(salvaged) == 0 {
+			continue
+		}
+
+		extra := strings.Join(salvaged, "\n")
+		existing, _ := uim["content"].(string)
+		if existing != "" {
+			uim["content"] = existing + "\n\n" + extra
+		} else {
+			uim["content"] = extra
+		}
+
+		if len(kept) > 0 {
+			ctx["toolResults"] = kept
+		} else {
+			delete(ctx, "toolResults")
+			if len(ctx) == 0 {
+				delete(uim, "userInputMessageContext")
+			}
+		}
+	}
+}
 
 func serializeToolResultContent(content any) string {
 	switch v := content.(type) {
