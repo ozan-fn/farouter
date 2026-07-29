@@ -85,7 +85,7 @@ func refreshExternalIdpToken(ctx context.Context, refreshToken string, psd Provi
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := getHttpClient().Do(req)
+	resp, err := getHttpClient().GetClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

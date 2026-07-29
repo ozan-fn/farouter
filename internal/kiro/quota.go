@@ -93,7 +93,7 @@ func doQuotaGet(rawURL string, headers map[string]string) ([]byte, error) {
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := getHttpClient().Do(req)
+	resp, err := getHttpClient().GetClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func doQuotaPost(rawURL string, body []byte, headers map[string]string) ([]byte,
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := getHttpClient().Do(req)
+	resp, err := getHttpClient().GetClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

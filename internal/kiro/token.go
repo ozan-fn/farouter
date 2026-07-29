@@ -93,7 +93,7 @@ func doRefreshPost(ctx context.Context, url string, payload []byte) (*TokenResul
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := getHttpClient().Do(req)
+	resp, err := getHttpClient().GetClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

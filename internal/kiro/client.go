@@ -7,7 +7,6 @@ package kiro
 //   DiscoverProfileArn → open-sse/services/discoverProfileArn (kiro external service)
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,38 +17,49 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-resty/resty/v2"
 	"github.com/google/uuid"
 )
 
-// httpClient dengan connect-only timeout via DialContext + TLSHandshakeTimeout.
+// httpClient uses resty v2 with connect-only timeout via DialContext + TLSHandshakeTimeout.
 // VansRouter pattern: FETCH_CONNECT_TIMEOUT_MS hanya untuk connection phase,
-// tidak untuk stream. http.Client.Timeout TIDAK dipakai karena membunuh body read.
+// tidak untuk stream. resty.Client.SetTimeout TIDAK dipakai karena membunuh body read.
 // Stream timeout di-handle oleh PipeWithDisconnect (TTFT 200s + stall 360s).
 // Non-streaming request (quota, token) punya context.WithTimeout sendiri.
-var httpClient = &http.Client{
-	Transport: &http.Transport{
+var httpClient = createRestyClient()
+
+func createRestyClient() *resty.Client {
+	client := resty.New()
+	client.SetTransport(&http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   FetchConnectTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSHandshakeTimeout: FetchConnectTimeout,
-	},
+	})
+	return client
 }
 
-func SetHTTPClient(client *http.Client) {
+func SetHTTPClient(client *resty.Client) {
 	if client != nil {
 		httpClient = client
 	}
 }
 
-func getHttpClient() *http.Client {
+func getHttpClient() *resty.Client {
 	return httpClient
 }
 
 // VansRouter: Go-specific infrastructure (HTTP exec helpers)
 
 func doRequestRawCtx(ctx context.Context, req *http.Request) (*http.Response, error) {
-	return getHttpClient().Do(req.WithContext(ctx))
+	// For http.Request, use the underlying HTTP client via resty
+	// This preserves body and headers from the raw request
+	client := getHttpClient()
+	
+	// Use resty's underlying client to execute the request
+	httpCli := client.GetClient()
+	return httpCli.Do(req.WithContext(ctx))
 }
 
 // BuildKiroHeaders — VansRouter: kiro.js buildHeaders()
@@ -129,29 +139,25 @@ func sendToKiroCtx(ctx context.Context, creds Credentials, body []byte) (*http.R
 	}
 
 	headers := BuildKiroHeaders(creds)
+	client := getHttpClient()
 
 	var lastErr error
 	for _, baseURL := range urls {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(body))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
+		resp, err := client.R().
+			SetContext(ctx).
+			SetHeaders(headers).
+			SetBody(body).
+			Post(baseURL)
 
-		resp, err := doRequestRawCtx(ctx, req)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if resp.StatusCode == http.StatusTooManyRequests {
-			resp.Body.Close()
+		if resp.StatusCode() == http.StatusTooManyRequests {
 			lastErr = fmt.Errorf("429 from %s", baseURL)
 			continue
 		}
-		return resp, nil
+		return resp.RawResponse, nil
 	}
 	return nil, fmt.Errorf("all kiro endpoints failed: %w", lastErr)
 }
@@ -226,31 +232,27 @@ func listProfileArnForRegion(ctx context.Context, accessToken, region string) (s
 	}
 
 	reqBody, _ := jsonMarshal(listReq{MaxResults: 10})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, host+"/", bytes.NewReader(reqBody))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-amz-target", "AmazonCodeWhispererService.ListAvailableProfiles")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	resp, err := doRequestRawCtx(timeoutCtx, req)
+	var data profileResp
+	resp, err := getHttpClient().R().
+		SetContext(timeoutCtx).
+		SetHeader("Content-Type", "application/x-amz-json-1.0").
+		SetHeader("Accept", "application/json").
+		SetHeader("x-amz-target", "AmazonCodeWhispererService.ListAvailableProfiles").
+		SetHeader("Authorization", "Bearer "+accessToken).
+		SetBody(reqBody).
+		SetResult(&data).
+		Post(host + "/")
+
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("list profiles: HTTP %d", resp.StatusCode)
-	}
-
-	var data profileResp
-	if err := jsonDecode(resp.Body, &data); err != nil {
-		return "", err
+	if resp.StatusCode() != http.StatusOK {
+		return "", fmt.Errorf("list profiles: HTTP %d", resp.StatusCode())
 	}
 
 	for _, p := range data.Profiles {

@@ -654,5 +654,5 @@ func sendToKiroEndpoint(ctx context.Context, creds Credentials, url string, body
 		req.Header.Set(k, v)
 	}
 
-	return getHttpClient().Do(req)
+	return getHttpClient().GetClient().Do(req)
 }
