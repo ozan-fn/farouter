@@ -67,10 +67,12 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 		}
 	}
 
-	kiroBody, err := buildKiroRequest(req, resolved, profileArn, conversationID, connectionID)
+	kiroReq, err := buildKiroRequest(req, resolved, profileArn, conversationID, connectionID)
 	if err != nil {
 		return err
 	}
+
+	kiroBody := kiroReq.Body
 
 	if rtkEnabled {
 		compressed, stats := rtk.CompressKiroBody(kiroBody)
@@ -162,7 +164,7 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 		}
 
 		defer resp.Body.Close()
-		return pipeKiroResponse(ctx, resp, w, resolved)
+		return pipeKiroResponse(ctx, resp, w, resolved, kiroReq.NameMap)
 	}
 
 	if lastErr != nil {
@@ -171,7 +173,7 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 	return fmt.Errorf("kiro: all %d endpoints failed with status %d", len(urls), lastStatus)
 }
 
-func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseWriter, resolved ResolvedModel) error {
+func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseWriter, resolved ResolvedModel, toolNameMap map[string]string) error {
 	// Pipeline: Kiro EventStream → SSE → passthrough transform → client
 	sc := NewStreamController(ctx)
 
@@ -179,7 +181,8 @@ func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseW
 	kiroPR, kiroPW := io.Pipe()
 	go func() {
 		defer kiroPW.Close()
-		err := transformKiroToSSE(resp.Body, resolved.Upstream, resolved.Thinking, kiroPW, nil)
+		opts := &TransformOptions{ToolNameMap: toolNameMap}
+		err := transformKiroToSSE(resp.Body, resolved.Upstream, resolved.Thinking, kiroPW, opts)
 		if err != nil {
 			writeStreamError(kiroPW, 502, err.Error())
 			fmt.Fprintf(kiroPW, "data: [DONE]\n\n")
@@ -250,10 +253,12 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 		}
 	}
 
-	kiroBody, err := buildKiroRequest(req, resolved, profileArn, conversationID, connectionID)
+	kiroReq, err := buildKiroRequest(req, resolved, profileArn, conversationID, connectionID)
 	if err != nil {
 		return err
 	}
+
+	kiroBody := kiroReq.Body
 
 	if rtkEnabled {
 		compressed, stats := rtk.CompressKiroBody(kiroBody)
@@ -293,7 +298,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 		return nil
 	}
 	
-	repairedBody := appendRepairInstruction(kiroBody, repairKind)
+	repairedBody := appendRepairInstruction(kiroReq.Body, repairKind)
 	
 	// Start heartbeat during repair to keep connection alive
 	heartbeatStop := make(chan struct{})

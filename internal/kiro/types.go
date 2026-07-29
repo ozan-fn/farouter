@@ -2,7 +2,6 @@ package kiro
 
 import (
 	"fmt"
-	"time"
 )
 
 const (
@@ -185,15 +184,6 @@ type TokenResult struct {
 	ProfileArn   string `json:"profileArn"`
 	ExpiresIn    int    `json:"expiresIn"`
 	Error        string `json:"error"`
-}
-
-// sessionEntry caches conversation state for session replay.
-type sessionEntry struct {
-	sessionStart   map[string]any
-	modelID        string
-	systemPrompt   string
-	continuationID string
-	lastUsed       time.Time
 }
 
 // Event is a parsed AWS EventStream frame.

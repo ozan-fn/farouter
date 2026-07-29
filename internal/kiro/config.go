@@ -53,20 +53,6 @@ func IsKnownModel(id string) bool {
 
 // ── Adaptive thinking allowlist (OmniRoute adaptiveThinking.ts) ────────────
 
-// KiroAdaptiveThinkingModels is the set of models that accept
-// additionalModelRequestFields for adaptive thinking on Kiro.
-// Only claude-sonnet-5 is confirmed; claude-sonnet-4.5 and claude-haiku-4.5
-// reject it with upstream 400.
-var KiroAdaptiveThinkingModels = map[string]bool{
-	"claude-sonnet-5": true,
-}
-
-// SupportsKiroAdaptiveThinking reports whether the normalized model ID
-// accepts the additionalModelRequestFields adaptive thinking envelope.
-func SupportsKiroAdaptiveThinking(model string) bool {
-	return KiroAdaptiveThinkingModels[model]
-}
-
 // ── Thinking effort levels (OmniRoute openai-to-kiro.ts) ───────────────────
 
 var kiroEffortLevels = map[string]bool{

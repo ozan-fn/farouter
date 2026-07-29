@@ -16,6 +16,9 @@ type kiroThinkingState struct {
 
 const partialTagMaxLen = 11
 
+// KIRO_PLACEHOLDER_TOOL_NAME is the placeholder tool name for empty tools (AIClient2API style)
+const KIRO_PLACEHOLDER_TOOL_NAME = "no_tool_available"
+
 var kiroEventTypes = map[string]bool{
 	"assistantResponseEvent":  true,
 	"reasoningContentEvent":   true,
@@ -45,9 +48,12 @@ type kiroSSEState struct {
 	model             string
 	thinkingState     kiroThinkingState
 	thinkingEnabled   bool
-	totalContentLength int
-	contextUsagePct   float64
-	hasContextUsage   bool
+	totalContentLength   int
+	contextUsagePct     float64
+	hasContextUsage     bool
+	lastContentEvent    string   // for content dedup (AIClient2API style)
+	hasYieldedContent   bool     // has any content/reasoning/toolUse been emitted
+	toolNameMap       map[string]string // reverse map: truncated → original
 
 	eventCounts          map[string]int
 	transportState       string
@@ -70,6 +76,7 @@ type kiroToolArgBuffer struct {
 type TransformOptions struct {
 	OnTerminalState func(*IntegrityDiagnostics)
 	MaxToolBytes    int
+	ToolNameMap     map[string]string // reverse map: truncated → original name
 }
 
 func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Writer, opts *TransformOptions) error {
@@ -87,6 +94,9 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 		thinkingEnabled: thinkingEnabled,
 		eventCounts:     make(map[string]int),
 		transportState:  "consuming_response",
+	}
+	if opts != nil && opts.ToolNameMap != nil {
+		state.toolNameMap = opts.ToolNameMap
 	}
 
 	emitDelta := func(delta map[string]any) {
@@ -130,15 +140,25 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 
 	onContent := func(s string) {
 		if s != "" {
+			// Content dedup: skip consecutive identical content (AIClient2API style, claude-kiro.js L2465-2470)
+			if s == state.lastContentEvent {
+				return
+			}
+			state.lastContentEvent = s
+
+			// Escaped newline conversion: \\n → \n (AIClient2API style, claude-kiro.js L2703)
+			decoded := convertEscapedNewlines(s)
 			state.hasText = true
-			state.totalContentLength += len(s)
-			emitDelta(map[string]any{"content": s})
+			state.hasYieldedContent = true
+			state.totalContentLength += len(decoded)
+			emitDelta(map[string]any{"content": decoded})
 		}
 	}
 
 	onReasoning := func(s string) {
 		if s != "" {
 			state.hasReasoning = true
+			state.hasYieldedContent = true
 			state.totalContentLength += len(s)
 			emitDelta(map[string]any{"reasoning_content": s})
 		}
@@ -263,6 +283,11 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 	state.transportState = "clean_eof"
 
 	flushKiroBufferedToolArgs(state, emitDelta)
+
+	// Empty response detection: no content, no thinking, no tool calls (AIClient2API style, claude-kiro.js L3116-3118)
+	if !state.hasYieldedContent {
+		return fmt.Errorf("kiro empty response: no content/reasoning/toolUse events received from upstream")
+	}
 
 	disposition := stopDisposition(state.stopReason, len(state.tools) > 0)
 	finishReason := "stop"
@@ -423,6 +448,18 @@ func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState, maxTool
 
 	for _, value := range values {
 		name, _ := value["name"].(string)
+		// Reverse-map tool name jika ada NameMap (AIClient2API style)
+		if state.toolNameMap != nil {
+			if original, ok := state.toolNameMap[name]; ok {
+				name = original
+			}
+		}
+
+		// Filter out placeholder tool (AIClient2API style, claude-kiro.js L1731-1736, L2895-2901)
+		if name == KIRO_PLACEHOLDER_TOOL_NAME {
+			continue
+		}
+
 		toolID, _ := value["toolUseId"].(string)
 		if toolID == "" {
 			toolID = fmt.Sprintf("call_%d_%d", state.created, len(state.tools)+1)
@@ -525,7 +562,13 @@ func handleKiroContextUsageEvent(payload map[string]any, state *kiroSSEState) {
 func flushKiroBufferedToolArgs(state *kiroSSEState, emitDelta func(map[string]any)) {
 	toolIndex := 0
 	for toolID, tool := range state.tools {
+		// Skip placeholder tools (AIClient2API style)
+		if tool.name == KIRO_PLACEHOLDER_TOOL_NAME {
+			delete(state.tools, toolID)
+			continue
+		}
 		state.hasToolCalls = true
+		state.hasYieldedContent = true
 
 		buf, hasBuf := state.toolArgsBuffer[toolID]
 		var arguments string
@@ -640,6 +683,32 @@ func splitInlineThinking(state *kiroThinkingState, raw string, onContent, onReas
 		state.thinkingMode = !state.thinkingMode
 		text = text[idx+len(target):]
 	}
+}
+
+// convertEscapedNewlines converts \\n to \n while preserving \\\n (AIClient2API style claude-kiro.js L2703).
+// JS: text.replace(/(?<!\\)\\n/g, '\n') — converts literal backslash-n to newline,
+// but NOT when preceded by another backslash (escaped backslash).
+func convertEscapedNewlines(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			if s[i+1] == '\\' {
+				// Escaped backslash: \\ → \, skip both
+				b.WriteByte('\\')
+				i++
+				continue
+			}
+			if s[i+1] == 'n' {
+				// Backslash-n → actual newline
+				b.WriteByte('\n')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func flushPendingThinking(state *kiroThinkingState, onContent, onReasoning func(string)) {

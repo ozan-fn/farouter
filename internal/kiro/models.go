@@ -36,12 +36,15 @@ func DefaultProfileArn(authMethod string) string {
 
 func BuildThinkingSystemPrefix(budget int) string {
 	if budget <= 0 {
-		budget = ThinkingBudgetDefault
+		budget = 20000
 	}
-	if budget > 32000 {
-		budget = 32000
+	if budget < 1024 {
+		budget = 1024
 	}
-	return fmt.Sprintf("<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>%d</max_thinking_length>", budget)
+	if budget > 24576 {
+		budget = 24576
+	}
+	return fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", budget)
 }
 
 func IsGPTModel(model string) bool {

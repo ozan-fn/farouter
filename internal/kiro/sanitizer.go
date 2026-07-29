@@ -8,70 +8,6 @@ import (
 
 const maxToolNameLength = 64
 
-var stripKeys = map[string]bool{
-	"additionalProperties": true,
-	"anyOf":                true,
-	"oneOf":                true,
-	"allOf":                true,
-	"not":                  true,
-	"$schema":              true,
-	"$id":                  true,
-	"$ref":                 true,
-	"$defs":                true,
-	"definitions":          true,
-	"if":                   true,
-	"then":                 true,
-	"else":                 true,
-	"unevaluatedProperties": true,
-	"unevaluatedItems":     true,
-	"contentEncoding":      true,
-	"contentMediaType":     true,
-}
-
-func stripUnsupportedKeys(value any) any {
-	if value == nil {
-		return value
-	}
-	switch v := value.(type) {
-	case map[string]any:
-		cleaned := make(map[string]any, len(v))
-		for key, val := range v {
-			if stripKeys[key] {
-				continue
-			}
-			if key == "required" {
-				if arr, ok := val.([]any); ok && len(arr) == 0 {
-					continue
-				}
-			}
-			cleaned[key] = stripUnsupportedKeys(val)
-		}
-		return cleaned
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = stripUnsupportedKeys(item)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
-func normalizeKiroToolSchema(schema map[string]any) map[string]any {
-	if schema == nil {
-		return map[string]any{"type": "object", "properties": map[string]any{}}
-	}
-	result := stripUnsupportedKeys(schema)
-	if m, ok := result.(map[string]any); ok {
-		if _, has := m["required"]; !has {
-			m["required"] = []any{}
-		}
-		return m
-	}
-	return map[string]any{"type": "object", "properties": map[string]any{}, "required": []any{}}
-}
-
 type SanitizeResult struct {
 	Tools   []any
 	NameMap map[string]string
@@ -99,17 +35,9 @@ func SanitizeKiroTools(tools []any) SanitizeResult {
 		name, _ := spec["name"].(string)
 		if len(name) > maxToolNameLength {
 			hash := sha256.Sum256([]byte(name))
-			truncated := name[:56] + "_" + fmt.Sprintf("%x", hash[:7])
+			truncated := name[:51] + "_" + fmt.Sprintf("%x", hash[:6])
 			nameMap[truncated] = name
 			spec["name"] = truncated
-		}
-
-		schema, _ := spec["inputSchema"].(map[string]any)
-		if schema != nil {
-			jsonSchema, _ := schema["json"].(map[string]any)
-			if jsonSchema != nil {
-				schema["json"] = normalizeKiroToolSchema(jsonSchema)
-			}
 		}
 
 		out = append(out, map[string]any{"toolSpecification": spec})
