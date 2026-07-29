@@ -9,20 +9,31 @@ branches:
 # Menonaktifkan pembacaan file solusi Visual Studio otomatis
 build: off
 
-# Caching folder modul Go, kompilasi build, serta binary UPX
+# Caching folder Go modules, build cache, dan folder binary UPX kustom
 cache:
-  - /root/go/pkg/mod             # Cache untuk Go modules/dependencies
+  - /root/go/pkg/mod             # Cache untuk Go modules
   - /root/.cache/go-build        # Cache untuk hasil kompilasi Go
-  - /usr/bin/upx                 # Cache biner UPX agar tidak perlu download ulang
+  - /root/.cache/upx             # Cache folder lokal UPX 5.2.0
 
 # Langkah setup environment, instalasi tools dasar, kompilasi, dan kompresi
 build_script:
   - go version
-  # Install UPX dan LFTP sekaligus dalam 1 kali apt update (jika belum ada di cache)
-  - if [ ! -f /usr/bin/upx ] || [ ! -f /usr/bin/lftp ]; then sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends upx lftp; fi
-  # Build biner Go
+
+  # 1. Install LFTP via apt jika belum ada
+  - if ! command -v lftp &> /dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends lftp; fi
+
+  # 2. Setup UPX v5.2.0 di folder cache lokal (Menggunakan rilis terbaru UPX 5.2.0)
+  - |
+    if [ ! -f /root/.cache/upx/upx ]; then
+      mkdir -p /root/.cache/upx
+      curl -sSL https://github.com/upx/upx/releases/download/v5.2.0/upx-5.2.0-amd64_linux.tar.xz | tar -xJ --strip-components=1 -C /root/.cache/upx
+    fi
+    sudo cp /root/.cache/upx/upx /usr/local/bin/upx
+
+  # 3. Build biner Go
   - CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
-  # Kompresi dengan UPX
+
+  # 4. Kompresi dengan UPX
   - upx --best --lzma farouter
 
 # Langkah eksekusi deployment via LFTP
