@@ -192,12 +192,6 @@ type Event struct {
 	Payload map[string]any
 }
 
-// EventFrame is the raw parsed event frame from the binary EventStream (OmniRoute equivalent).
-type EventFrame struct {
-	Headers map[string]string
-	Payload map[string]any
-}
-
 // ── Stop disposition (kiro.js stopDisposition) ──────────────────────────
 
 type StopDisposition string
@@ -254,49 +248,15 @@ const (
 	EventstreamMaxHeadersBytes             = 128 * 1024
 )
 
-// ── OmniRoute-derived stream types ─────────────────────────────────────────
-
 // UsageSummary tracks token usage across the stream.
 type UsageSummary struct {
-	PromptTokens           int `json:"prompt_tokens"`
-	CompletionTokens       int `json:"completion_tokens"`
-	TotalTokens            int `json:"total_tokens"`
-	CacheReadInputTokens   int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-}
-
-// KiroStreamState tracks mutable state across an AWS EventStream→SSE transform.
-type KiroStreamState struct {
-	EndDetected            bool
-	FinishEmitted          bool
-	StartEmitted           bool
-	StopSeen               bool
-	HasToolCalls           bool
-	ToolCallIndex          int
-	TotalContentLength     int
-	ContextUsagePercentage float64
-	HasContextUsage        bool
-	HasMeteringEvent       bool
-	HasReasoningContent    bool
-	ReasoningChunkCount    int
-
-	SeenToolIds      map[string]int
-	ToolArgsEmitted  map[string]string
-	ToolArgsBuffered map[string]ToolBufferEntry
-	Usage            *UsageSummary
-	Thinking         *KiroThinkingState
-}
-
-// ToolBufferEntry holds a buffered partial-object tool argument payload.
-type ToolBufferEntry struct {
-	ToolIndex int
-	Canonical string
-}
-
-// KiroThinkingState tracks the inline <thinking> splitter state.
-type KiroThinkingState struct {
-	ThinkingMode bool
-	PendingTag   string
+	PromptTokens             int    `json:"prompt_tokens"`
+	CompletionTokens         int    `json:"completion_tokens"`
+	TotalTokens              int    `json:"total_tokens"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	KiroCredits              int    `json:"kiro_credits,omitempty"`
+	KiroCreditUnit           string `json:"kiro_credit_unit,omitempty"`
 }
 
 // ── Kiro model catalog entry (OmniRoute RegistryModel equivalent) ──────────

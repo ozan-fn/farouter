@@ -519,15 +519,42 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	// In that case, currentMessage is stale (still points to an older user message).
 	// Replace it with a fresh "Continue" to avoid sending stale text to Bedrock
 	// which would cause TOOL_USE_RESULT_MISMATCH.
+	//
+	// Also handle the case where currentMessage HAS toolResults but with WRONG
+	// toolUseIds (from a different conversation turn). The fix must verify that
+	// ALL toolResult IDs match the expected toolUse IDs from the last assistant
+	// response, not just check for presence of toolResults.
 	if len(history) > 0 {
 		if lastARM, ok := history[len(history)-1]["assistantResponseMessage"].(map[string]any); ok {
 			if tuArr, has := lastARM["toolUses"].([]any); has && len(tuArr) > 0 {
-				// Check if currentMessage has matching toolResults
+				// Collect expected toolUseIds from the last history assistant
+				expectedIDs := make(map[string]bool, len(tuArr))
+				for _, tu := range tuArr {
+					if tuMap, ok := tu.(map[string]any); ok {
+						if id, ok := tuMap["toolUseId"].(string); ok && id != "" {
+							expectedIDs[id] = true
+						}
+					}
+				}
+
+				// Check if currentMessage has matching toolResults with CORRECT IDs
 				hasMatchingResults := false
 				if uim, ok := currentMessage["userInputMessage"].(map[string]any); ok {
 					if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
 						if trArr, ok := ctx["toolResults"].([]any); ok && len(trArr) > 0 {
-							hasMatchingResults = true
+							// Verify ALL tool result IDs are among expected IDs
+							allMatch := true
+							for _, tr := range trArr {
+								if trMap, ok := tr.(map[string]any); ok {
+									if id, ok := trMap["toolUseId"].(string); ok && id != "" {
+										if !expectedIDs[id] {
+											allMatch = false
+											break
+										}
+									}
+								}
+							}
+							hasMatchingResults = allMatch
 						}
 					}
 				}

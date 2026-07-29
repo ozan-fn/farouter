@@ -42,7 +42,7 @@ type kiroSSEState struct {
 	explicitStop      bool
 	tools             map[string]*kiroToolBuffer
 	toolArgsBuffer    map[string]*kiroToolArgBuffer
-	usage             map[string]any
+	usage             *UsageSummary
 	responseID        string
 	created           int64
 	model             string
@@ -119,7 +119,7 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 		fmt.Fprintf(w, "data: %s\n\n", b)
 	}
 
-	emitFinish := func(finishReason string, usage map[string]any) {
+	emitFinish := func(finishReason string, usage *UsageSummary) {
 		chunk := map[string]any{
 			"id":      state.responseID,
 			"object":  "chat.completion.chunk",
@@ -332,11 +332,12 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 			}
 			prompt = int(state.contextUsagePct * float64(contextWindow) / 100)
 		}
-		state.usage = map[string]any{
-			"prompt_tokens":     prompt,
-			"completion_tokens": completion,
-			"total_tokens":      prompt + completion,
+		if state.usage == nil {
+			state.usage = &UsageSummary{}
 		}
+		state.usage.PromptTokens = prompt
+		state.usage.CompletionTokens = completion
+		state.usage.TotalTokens = prompt + completion
 	}
 
 	usage := buildKiroUsage(state)
@@ -355,17 +356,14 @@ func (s *kiroSSEState) hasMetering() bool {
 	if s.usage == nil {
 		return false
 	}
-	_, ok := s.usage["kiro_credits"]
-	return ok
+	return s.usage.KiroCredits > 0
 }
 
-func hasUsageTokens(usage map[string]any) bool {
+func hasUsageTokens(usage *UsageSummary) bool {
 	if usage == nil {
 		return false
 	}
-	pt, _ := usage["prompt_tokens"].(float64)
-	ct, _ := usage["completion_tokens"].(float64)
-	return int(pt) > 0 || int(ct) > 0
+	return usage.PromptTokens > 0 || usage.CompletionTokens > 0
 }
 
 func buildDiagnostics(state *kiroSSEState) *IntegrityDiagnostics {
@@ -511,24 +509,26 @@ func handleKiroMetricsEvent(payload map[string]any, state *kiroSSEState) {
 	prompt := toInt(metrics["inputTokens"])
 	completion := toInt(metrics["outputTokens"])
 	if prompt > 0 || completion > 0 {
-		state.usage = map[string]any{
-			"prompt_tokens":     prompt,
-			"completion_tokens": completion,
-			"total_tokens":      prompt + completion,
+		if state.usage == nil {
+			state.usage = &UsageSummary{}
 		}
+		state.usage.PromptTokens = prompt
+		state.usage.CompletionTokens = completion
+		state.usage.TotalTokens = prompt + completion
+
 		cacheRead := toInt(metrics["cacheReadInputTokens"])
 		if cacheRead == 0 {
 			cacheRead = toInt(metrics["cache_read_input_tokens"])
 		}
 		if cacheRead > 0 {
-			state.usage["cache_read_input_tokens"] = cacheRead
+			state.usage.CacheReadInputTokens = cacheRead
 		}
 		cacheCreate := toInt(metrics["cacheCreationInputTokens"])
 		if cacheCreate == 0 {
 			cacheCreate = toInt(metrics["cache_creation_input_tokens"])
 		}
 		if cacheCreate > 0 {
-			state.usage["cache_creation_input_tokens"] = cacheCreate
+			state.usage.CacheCreationInputTokens = cacheCreate
 		}
 	}
 }
@@ -541,14 +541,14 @@ func handleKiroMeteringEvent(payload map[string]any, state *kiroSSEState) {
 	credits := toInt(metering["usage"])
 	if credits > 0 {
 		if state.usage == nil {
-			state.usage = make(map[string]any)
+			state.usage = &UsageSummary{}
 		}
-		state.usage["kiro_credits"] = credits
+		state.usage.KiroCredits = credits
 		unit := "credit"
 		if u, ok := metering["unit"].(string); ok && u != "" {
 			unit = u
 		}
-		state.usage["kiro_credit_unit"] = unit
+		state.usage.KiroCreditUnit = unit
 	}
 }
 
@@ -603,7 +603,7 @@ func flushKiroBufferedToolArgs(state *kiroSSEState, emitDelta func(map[string]an
 	}
 }
 
-func buildKiroUsage(state *kiroSSEState) map[string]any {
+func buildKiroUsage(state *kiroSSEState) *UsageSummary {
 	if state.usage != nil {
 		return state.usage
 	}
@@ -627,10 +627,10 @@ func buildKiroUsage(state *kiroSSEState) map[string]any {
 		}
 		prompt = int(state.contextUsagePct * float64(contextWindow) / 100)
 	}
-	return map[string]any{
-		"prompt_tokens":     prompt,
-		"completion_tokens": completion,
-		"total_tokens":      prompt + completion,
+	return &UsageSummary{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      prompt + completion,
 	}
 }
 

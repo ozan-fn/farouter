@@ -277,6 +277,221 @@ func TestConvertMessagesAssistantEndWithToolCalls(t *testing.T) {
 	}
 }
 
+// TestConvertMessagesToolResultIDMismatch verifies the fix for
+// TOOL_USE_RESULT_MISMATCH when currentMessage HAS toolResults but with WRONG
+// toolUseIds. This happens when the last assistant has toolUses=["call_A"] but
+// the current toolResults reference a DIFFERENT ID ("call_B" from an earlier
+// round). Bedrock rejects this as TOOL_USE_RESULT_MISMATCH.
+func TestConvertMessagesToolResultIDMismatch(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "list files"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_A", Type: "function", Function: ToolCallFunction{Name: "ls", Arguments: `{}`}},
+			},
+		},
+		{Role: "tool", Content: "file1.go", ToolCallID: "call_A"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_B", Type: "function", Function: ToolCallFunction{Name: "readFile", Arguments: `{}`}},
+			},
+		},
+		{Role: "tool", Content: "package main", ToolCallID: "call_B"},
+		{Role: "assistant", Content: "Done."},
+		{Role: "user", Content: "thanks"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_C", Type: "function", Function: ToolCallFunction{Name: "editFile", Arguments: `{}`}},
+			},
+		},
+	}
+
+	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+
+	// History should end with assistantResponseMessage with toolUses=[call_C]
+	if len(result.history) == 0 {
+		t.Fatal("history should not be empty")
+	}
+	last := result.history[len(result.history)-1]
+	arm, ok := last["assistantResponseMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("history should end with assistantResponseMessage")
+	}
+	tuArr, has := arm["toolUses"].([]any)
+	if !has || len(tuArr) == 0 {
+		t.Fatal("assistantResponseMessage should have toolUses")
+	}
+	// Verify the toolUse is call_C
+	if tu, ok := tuArr[0].(map[string]any); ok {
+		if tu["toolUseId"] != "call_C" {
+			t.Errorf("last toolUseId = %q, want 'call_C'", tu["toolUseId"])
+		}
+	}
+
+	// currentMessage must be "Continue" because the stale currentMessage
+	// (which references old "thanks" text) doesn't have matching toolResults
+	// for call_C → replaced with "Continue"
+	if result.currentMessage == nil {
+		t.Fatal("currentMessage is nil")
+	}
+	uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage.userInputMessage is not a map")
+	}
+	if uim["content"] != "Continue" {
+		t.Errorf("currentMessage content = %q, want 'Continue'", uim["content"])
+	}
+}
+
+// TestConvertMessagesToolResultIDMismatchWithResults verifies that when
+// currentMessage has toolResults with WRONG IDs (from a different turn),
+// the stale fix replaces currentMessage with "Continue" instead of
+// sending mismatched IDs to Bedrock.
+func TestConvertMessagesToolResultIDMismatchWithResults(t *testing.T) {
+	// This scenario simulates when the last OpenAI message is
+	// assistant(tool_calls=[call_B]) but the currentMessage somehow
+	// still has toolResults from a PREVIOUS round (call_A).
+	// The fix must detect that call_A doesn't match expected call_B
+	// and replace currentMessage with "Continue".
+	messages := []Message{
+		{Role: "user", Content: "list files"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_A", Type: "function", Function: ToolCallFunction{Name: "ls", Arguments: `{}`}},
+			},
+		},
+		{Role: "tool", Content: "file1.go", ToolCallID: "call_A"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_B", Type: "function", Function: ToolCallFunction{Name: "readFile", Arguments: `{}`}},
+			},
+		},
+	}
+
+	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+
+	// History should end with assistantResponseMessage with toolUses=[call_B]
+	last := result.history[len(result.history)-1]
+	arm, ok := last["assistantResponseMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("history should end with assistantResponseMessage")
+	}
+	tuArr, has := arm["toolUses"].([]any)
+	if !has || len(tuArr) == 0 {
+		t.Fatal("assistantResponseMessage should have toolUses")
+	}
+	if tu, ok := tuArr[0].(map[string]any); ok {
+		if tu["toolUseId"] != "call_B" {
+			t.Errorf("last toolUseId = %q, want 'call_B'", tu["toolUseId"])
+		}
+	}
+
+	// currentMessage should be "Continue" because the stale user message
+	// from history (which was created from the tool result for call_A)
+	// doesn't have matching toolResults for call_B
+	if result.currentMessage == nil {
+		t.Fatal("currentMessage is nil")
+	}
+	uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage.userInputMessage is not a map")
+	}
+	if uim["content"] != "Continue" {
+		t.Errorf("currentMessage content = %q, want 'Continue'", uim["content"])
+	}
+	// Verify there are NO toolResults in currentMessage
+	if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
+		if trArr, ok := ctx["toolResults"]; ok {
+			t.Errorf("currentMessage should not have toolResults, got %v", trArr)
+		}
+	}
+}
+
+// TestConvertMessagesToolResultIDMatch verifies that when currentMessage
+// has toolResults with IDs that MATCH the last history assistant's toolUses,
+// the currentMessage is preserved (not replaced with "Continue").
+func TestConvertMessagesToolResultIDMatch(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "list files"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "ls", Arguments: `{}`}},
+			},
+		},
+		{Role: "tool", Content: "file1.go", ToolCallID: "call_1"},
+		{Role: "assistant", Content: "Done."},
+		{Role: "user", Content: "now read it"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_2", Type: "function", Function: ToolCallFunction{Name: "readFile", Arguments: `{}`}},
+			},
+		},
+		{Role: "tool", Content: "package main", ToolCallID: "call_2"},
+	}
+
+	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+
+	// History should end with assistantResponseMessage with toolUses=[call_2]
+	last := result.history[len(result.history)-1]
+	arm, ok := last["assistantResponseMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("history should end with assistantResponseMessage")
+	}
+	tuArr, has := arm["toolUses"].([]any)
+	if !has || len(tuArr) == 0 {
+		t.Fatal("assistantResponseMessage should have toolUses")
+	}
+	if tu, ok := tuArr[0].(map[string]any); ok {
+		if tu["toolUseId"] != "call_2" {
+			t.Errorf("last toolUseId = %q, want 'call_2'", tu["toolUseId"])
+		}
+	}
+
+	// currentMessage should have toolResults=[call_2] — preserved
+	if result.currentMessage == nil {
+		t.Fatal("currentMessage is nil")
+	}
+	uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage.userInputMessage is not a map")
+	}
+	// Content should be "Tool results provided." not "Continue"
+	if uim["content"] == "Continue" {
+		t.Error("currentMessage should not be replaced with 'Continue' when toolResult IDs match")
+	}
+	if uim["content"] != "Tool results provided." {
+		t.Errorf("currentMessage content = %q, want 'Tool results provided.'", uim["content"])
+	}
+	// Verify toolResults are present with correct ID
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage should have userInputMessageContext")
+	}
+	trArr, ok := ctx["toolResults"].([]any)
+	if !ok || len(trArr) != 1 {
+		t.Fatalf("currentMessage should have 1 toolResult, got %v", trArr)
+	}
+	if tr, ok := trArr[0].(map[string]any); ok {
+		if tr["toolUseId"] != "call_2" {
+			t.Errorf("toolResult toolUseId = %q, want 'call_2'", tr["toolUseId"])
+		}
+	}
+}
+
 func TestConvertMessagesMultiTurnToolCalls(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "list files"},
