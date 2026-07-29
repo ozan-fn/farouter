@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -254,7 +255,7 @@ func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[s
 			if validIDs[id] {
 				kept = append(kept, tr)
 			} else {
-				salvaged = append(salvaged, toolResultToTextFromMap(m["content"]))
+				salvaged = append(salvaged, toolResultToTextFromMap(id, m["content"]))
 			}
 		}
 
@@ -281,10 +282,11 @@ func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[s
 	}
 }
 
-func toolResultToTextFromMap(content any) string {
+func toolResultToTextFromMap(toolUseID string, content any) string {
+	var txt string
 	switch v := content.(type) {
 	case string:
-		return "[Tool result: " + v + "]"
+		txt = v
 	case []any:
 		var parts []string
 		for _, c := range v {
@@ -296,7 +298,10 @@ func toolResultToTextFromMap(content any) string {
 				parts = append(parts, s)
 			}
 		}
-		return "[Tool result: " + strings.Join(parts, "\n") + "]"
+		txt = strings.Join(parts, "\n")
 	}
-	return "[Tool result:]"
+	if toolUseID != "" {
+		return fmt.Sprintf("[Tool Result (%s)]\n%s", toolUseID, txt)
+	}
+	return fmt.Sprintf("[Tool Result]\n%s", txt)
 }

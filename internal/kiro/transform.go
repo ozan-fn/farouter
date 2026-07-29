@@ -605,7 +605,9 @@ func mergeConsecutiveRoles(history []map[string]any) []map[string]any {
 }
 
 func ensureAlternatingRoles(history []map[string]any) []map[string]any {
-	return history
+	// Delegate to mergeConsecutiveRoles to ensure no two same-role messages are adjacent.
+	// This serves as a final safety net in case earlier processing missed something.
+	return mergeConsecutiveRoles(history)
 }
 
 func fixOrphanedToolResults(history []map[string]any) {

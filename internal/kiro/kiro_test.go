@@ -369,7 +369,7 @@ func TestConvertMessagesFlattensToolInteractionsWithoutTools(t *testing.T) {
 }
 
 func TestEnsureAlternatingRoles(t *testing.T) {
-	t.Run("no-op function returns history as-is", func(t *testing.T) {
+	t.Run("merges consecutive user messages", func(t *testing.T) {
 		history := []map[string]any{
 			{"userInputMessage": map[string]any{"content": "a"}},
 			{"userInputMessage": map[string]any{"content": "b"}},
@@ -378,17 +378,39 @@ func TestEnsureAlternatingRoles(t *testing.T) {
 
 		result := ensureAlternatingRoles(history)
 
-		if len(result) != 3 {
-			t.Fatalf("len = %d, want 3", len(result))
+		if len(result) != 2 {
+			t.Fatalf("len = %d, want 2", len(result))
 		}
 		if result[0]["userInputMessage"] == nil {
 			t.Error("result[0] should be user")
 		}
-		if result[1]["userInputMessage"] == nil {
-			t.Error("result[1] should be user")
+		uim := result[0]["userInputMessage"].(map[string]any)
+		if uim["content"] != "a\n\nb" {
+			t.Errorf("merged content = %q, want 'a\\n\\nb'", uim["content"])
 		}
-		if result[2]["assistantResponseMessage"] == nil {
-			t.Error("result[2] should be assistant")
+		if result[1]["assistantResponseMessage"] == nil {
+			t.Error("result[1] should be assistant")
+		}
+	})
+
+	t.Run("merges consecutive assistant messages", func(t *testing.T) {
+		history := []map[string]any{
+			{"userInputMessage": map[string]any{"content": "a"}},
+			{"assistantResponseMessage": map[string]any{"content": "b"}},
+			{"assistantResponseMessage": map[string]any{"content": "c"}},
+		}
+
+		result := ensureAlternatingRoles(history)
+
+		if len(result) != 2 {
+			t.Fatalf("len = %d, want 2", len(result))
+		}
+		if result[1]["assistantResponseMessage"] == nil {
+			t.Error("result[1] should be assistant")
+		}
+		arm := result[1]["assistantResponseMessage"].(map[string]any)
+		if arm["content"] != "b\n\nc" {
+			t.Errorf("merged content = %q, want 'b\\n\\nc'", arm["content"])
 		}
 	})
 
@@ -403,6 +425,118 @@ func TestEnsureAlternatingRoles(t *testing.T) {
 
 		if len(result) != 3 {
 			t.Fatalf("len = %d, want 3", len(result))
+		}
+	})
+
+	t.Run("single item returns as-is", func(t *testing.T) {
+		history := []map[string]any{
+			{"userInputMessage": map[string]any{"content": "a"}},
+		}
+
+		result := ensureAlternatingRoles(history)
+
+		if len(result) != 1 {
+			t.Fatalf("len = %d, want 1", len(result))
+		}
+	})
+
+	t.Run("mixed consecutive merges correctly", func(t *testing.T) {
+		history := []map[string]any{
+			{"userInputMessage": map[string]any{"content": "a"}},
+			{"userInputMessage": map[string]any{"content": "b"}},
+			{"assistantResponseMessage": map[string]any{"content": "c"}},
+			{"assistantResponseMessage": map[string]any{"content": "d"}},
+		}
+
+		result := ensureAlternatingRoles(history)
+
+		if len(result) != 2 {
+			t.Fatalf("len = %d, want 2", len(result))
+		}
+		uim := result[0]["userInputMessage"].(map[string]any)
+		if uim["content"] != "a\n\nb" {
+			t.Errorf("merged user content = %q", uim["content"])
+		}
+		arm := result[1]["assistantResponseMessage"].(map[string]any)
+		if arm["content"] != "c\n\nd" {
+			t.Errorf("merged assistant content = %q", arm["content"])
+		}
+	})
+
+	t.Run("merges user with toolResults context", func(t *testing.T) {
+		history := []map[string]any{
+			{
+				"userInputMessage": map[string]any{
+					"content": "step 1",
+					"userInputMessageContext": map[string]any{
+						"toolResults": []any{
+							map[string]any{"toolUseId": "call_1"},
+						},
+					},
+				},
+			},
+			{
+				"userInputMessage": map[string]any{
+					"content": "step 2",
+					"userInputMessageContext": map[string]any{
+						"toolResults": []any{
+							map[string]any{"toolUseId": "call_2"},
+						},
+					},
+				},
+			},
+			{"assistantResponseMessage": map[string]any{"content": "done"}},
+		}
+
+		result := ensureAlternatingRoles(history)
+
+		if len(result) != 2 {
+			t.Fatalf("len = %d, want 2", len(result))
+		}
+		uim := result[0]["userInputMessage"].(map[string]any)
+		if uim["content"] != "step 1\n\nstep 2" {
+			t.Errorf("merged content = %q", uim["content"])
+		}
+		ctx := uim["userInputMessageContext"].(map[string]any)
+		trArr := ctx["toolResults"].([]any)
+		if len(trArr) != 2 {
+			t.Errorf("merged toolResults len = %d, want 2", len(trArr))
+		}
+	})
+
+	t.Run("merges assistant with toolUses context", func(t *testing.T) {
+		history := []map[string]any{
+			{"userInputMessage": map[string]any{"content": "hi"}},
+			{
+				"assistantResponseMessage": map[string]any{
+					"content": "Let me check",
+					"toolUses": []any{
+						map[string]any{"toolUseId": "call_1"},
+					},
+				},
+			},
+			{
+				"assistantResponseMessage": map[string]any{
+					"content": "Here is the result",
+					"toolUses": []any{
+						map[string]any{"toolUseId": "call_2"},
+					},
+				},
+			},
+		}
+
+		result := ensureAlternatingRoles(history)
+
+		if len(result) != 2 {
+			t.Fatalf("len = %d, want 2", len(result))
+		}
+		arm := result[1]["assistantResponseMessage"].(map[string]any)
+		if arm["content"] != "Let me check\n\nHere is the result" {
+			t.Errorf("merged content = %q", arm["content"])
+		}
+		tuArr := arm["toolUses"].([]any)
+		if len(tuArr) != 2 {
+			t.Errorf("merged toolUses len = %d, want 2", len(tuArr))
 		}
 	})
 }
