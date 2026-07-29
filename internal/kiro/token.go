@@ -10,18 +10,17 @@ import (
 
 const socialAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
 
-func RefreshToken(refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
+func RefreshToken(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
 	if isExternalIdpAuthMethod(psd.AuthMethod) && psd.TokenEndpoint != "" {
-		ctx := context.Background()
 		return refreshExternalIdpToken(ctx, refreshToken, psd)
 	}
 	if psd.ClientID != "" && psd.ClientSecret != "" {
-		return refreshAWSSSO(refreshToken, psd)
+		return refreshAWSSSO(ctx, refreshToken, psd)
 	}
-	return refreshSocial(refreshToken)
+	return refreshSocial(ctx, refreshToken)
 }
 
-func refreshAWSSSO(refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
+func refreshAWSSSO(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
 	region := psd.Region
 	if region == "" {
 		region = "us-east-1"
@@ -33,18 +32,18 @@ func refreshAWSSSO(refreshToken string, psd ProviderSpecificData) (*TokenResult,
 		"refreshToken": refreshToken,
 		"grantType":    "refresh_token",
 	})
-	return doRefreshPost(endpoint, payload)
+	return doRefreshPost(ctx, endpoint, payload)
 }
 
-func refreshSocial(refreshToken string) (*TokenResult, error) {
+func refreshSocial(ctx context.Context, refreshToken string) (*TokenResult, error) {
 	payload, _ := json.Marshal(map[string]string{
 		"refreshToken": refreshToken,
 	})
-	return doRefreshPost(socialAuthService+"/refreshToken", payload)
+	return doRefreshPost(ctx, socialAuthService+"/refreshToken", payload)
 }
 
-func doRefreshPost(url string, payload []byte) (*TokenResult, error) {
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+func doRefreshPost(ctx context.Context, url string, payload []byte) (*TokenResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}

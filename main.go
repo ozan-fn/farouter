@@ -108,42 +108,67 @@ var (
 	analyticsData *analytics.Analytics
 )
 
-func (a *accountState) getCreds() (kiro.Credentials, error) {
+func (a *accountState) getCreds(ctx context.Context) (kiro.Credentials, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.accessToken == "" || time.Now().Add(5*time.Minute).After(a.expiry) {
-		var result *kiro.TokenResult
-		var err error
-		for i := 0; i < 3; i++ {
-			result, err = kiro.RefreshToken(a.cfg.RefreshToken, kiro.ProviderSpecificData{
-				AuthMethod: a.cfg.AuthMethod,
-				ProfileArn: a.cfg.ProfileArn,
-			})
-			if err == nil {
-				break
-			}
-			if err.Error() == "upstream returned 403 Forbidden" {
-				return kiro.Credentials{}, err
-			}
-			log.Printf("refresh retry %d [%s]: %v", i+1, a.cfg.Label, err)
-			time.Sleep(time.Duration(i+1) * time.Second)
+	if a.accessToken != "" && time.Now().Add(5*time.Minute).Before(a.expiry) {
+		creds := kiro.Credentials{
+			AccessToken:  a.accessToken,
+			RefreshToken: a.cfg.RefreshToken,
+			ProfileArn:   a.cfg.ProfileArn,
+			PSD:          kiro.ProviderSpecificData{AuthMethod: a.cfg.AuthMethod, ProfileArn: a.cfg.ProfileArn},
 		}
-		if err != nil {
-			a.failedRefresh++
-			if a.failedRefresh >= 3 {
-				a.exhausted = true
-				a.remaining = 0
-				a.cfg.Exhausted = true
-			}
+		a.mu.Unlock()
+		return creds, nil
+	}
+	refreshToken := a.cfg.RefreshToken
+	psd := kiro.ProviderSpecificData{AuthMethod: a.cfg.AuthMethod, ProfileArn: a.cfg.ProfileArn}
+	a.mu.Unlock()
+
+	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var result *kiro.TokenResult
+	var err error
+	for i := 0; i < 3; i++ {
+		select {
+		case <-refreshCtx.Done():
+			return kiro.Credentials{}, refreshCtx.Err()
+		default:
+		}
+		result, err = kiro.RefreshToken(refreshCtx, refreshToken, psd)
+		if err == nil {
+			break
+		}
+		if err.Error() == "upstream returned 403 Forbidden" {
 			return kiro.Credentials{}, err
 		}
-		a.failedRefresh = 0
-		a.accessToken = result.AccessToken
-		a.expiry = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
-		a.cfg.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-		if result.ProfileArn != "" {
-			a.cfg.ProfileArn = result.ProfileArn
+		log.Printf("refresh retry %d [%s]: %v", i+1, a.cfg.Label, err)
+		if i < 2 {
+			select {
+			case <-refreshCtx.Done():
+				return kiro.Credentials{}, refreshCtx.Err()
+			case <-time.After(time.Duration(i+1) * time.Second):
+			}
 		}
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err != nil {
+		a.failedRefresh++
+		if a.failedRefresh >= 3 {
+			a.exhausted = true
+			a.remaining = 0
+			a.cfg.Exhausted = true
+		}
+		return kiro.Credentials{}, err
+	}
+	a.failedRefresh = 0
+	a.accessToken = result.AccessToken
+	a.expiry = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	a.cfg.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
+	if result.ProfileArn != "" {
+		a.cfg.ProfileArn = result.ProfileArn
 	}
 	return kiro.Credentials{
 		AccessToken:  a.accessToken,
@@ -219,11 +244,18 @@ func (a *accountState) refreshTokenIfNeeded() {
 		}
 	}
 
-	result, err := kiro.RefreshToken(a.cfg.RefreshToken, kiro.ProviderSpecificData{
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := kiro.RefreshToken(ctx, a.cfg.RefreshToken, kiro.ProviderSpecificData{
 		AuthMethod: a.cfg.AuthMethod,
 		ProfileArn: a.cfg.ProfileArn,
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			log.Printf("refresh token skipped [%s]: %v", a.cfg.Label, err)
+			return
+		}
 		a.mu.Lock()
 		a.failedRefresh++
 		if a.failedRefresh >= 3 {
@@ -306,9 +338,20 @@ func fillActiveBatch() {
 	rotationMu.Lock()
 	defer rotationMu.Unlock()
 
-	// Build standby queue from all non-suspended, non-exhausted accounts
+	now := time.Now()
 	standbyQueue = nil
 	for _, a := range accounts {
+		// Auto-reactivate exhausted accounts whose ResetAt has passed
+		if a.exhausted && a.cfg.ResetAt != "" {
+			resetTime := parseResetAt(a.cfg.ResetAt)
+			if !resetTime.IsZero() && now.After(resetTime) {
+				a.exhausted = false
+				a.remaining = tokenLimit
+				a.cfg.Exhausted = false
+				a.cfg.ResetAt = ""
+				log.Printf("fillActiveBatch: auto-reactivated [%s]", a.cfg.Label)
+			}
+		}
 		if a.available() {
 			standbyQueue = append(standbyQueue, a)
 		}
@@ -356,31 +399,27 @@ func pickAccount() *accountState {
 func getNextAvailableAccount() *accountState {
 	rotationMu.Lock()
 	defer rotationMu.Unlock()
-	
-	for len(standbyQueue) > 0 {
+
+	// Build fresh standby queue — available accounts NOT in active batch
+	inBatch := map[*accountState]bool{}
+	for i := 0; i < 3; i++ {
+		if activeBatch[i] != nil {
+			inBatch[activeBatch[i]] = true
+		}
+	}
+	standbyQueue = nil
+	for _, a := range accounts {
+		if a.available() && !inBatch[a] {
+			standbyQueue = append(standbyQueue, a)
+		}
+	}
+
+	if len(standbyQueue) > 0 {
 		acc := standbyQueue[0]
 		standbyQueue = standbyQueue[1:]
-		if acc.available() && !acc.cfg.Exhausted {
-			return acc
-		}
+		return acc
 	}
-	
-	for _, a := range accounts {
-		if !a.available() || a.cfg.Exhausted {
-			continue
-		}
-		inPool := false
-		for i := 0; i < 3; i++ {
-			if activeBatch[i] == a {
-				inPool = true
-				break
-			}
-		}
-		if !inPool {
-			return a
-		}
-	}
-	
+
 	return nil
 }
 
@@ -560,7 +599,7 @@ func loadConfig() {
 					continue
 				}
 			}
-			creds, err := a.getCreds()
+			creds, err := a.getCreds(context.Background())
 			if err != nil {
 				log.Printf("[%d/%d] %s: refresh failed — %v", i+1, total, a.cfg.Label, err)
 				continue
@@ -988,12 +1027,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if acc == nil {
 			if !resetDone {
 				resetDone = true
-				log.Println("all accounts in pool exhausted, resetting and retrying once")
-				for _, a := range accounts {
-					if !a.suspended {
-						a.reset()
-					}
-				}
+				log.Println("all accounts in pool exhausted, refreshing pool")
 				fillActiveBatch()
 				credsErrCount = 0
 				continue
@@ -1002,7 +1036,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		creds, err := acc.getCreds()
+		creds, err := acc.getCreds(ctx)
 		if err != nil {
 			credsErrCount++
 			if credsErrCount >= 3 {
