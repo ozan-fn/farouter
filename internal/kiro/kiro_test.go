@@ -229,6 +229,54 @@ func TestConvertMessagesWithToolCalls(t *testing.T) {
 	}
 }
 
+// TestConvertMessagesAssistantEndWithToolCalls verifies the fix for
+// TOOL_USE_RESULT_MISMATCH: when the LAST message is assistant with tool_calls
+// (no tool/user follow-up), convertMessages must replace the stale currentMessage
+// (which still points to an older user message) with a fresh "Continue" user message.
+func TestConvertMessagesAssistantEndWithToolCalls(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "list files"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "ls", Arguments: `{}`}},
+			},
+		},
+	}
+
+	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+
+	// History should end with assistantResponseMessage (the toolUses)
+	if len(result.history) == 0 {
+		t.Fatal("history should not be empty")
+	}
+	last := result.history[len(result.history)-1]
+	if last["assistantResponseMessage"] == nil {
+		t.Error("history should end with assistantResponseMessage")
+	}
+	if arm, ok := last["assistantResponseMessage"].(map[string]any); ok {
+		if tuArr, has := arm["toolUses"].([]any); !has || len(tuArr) == 0 {
+			t.Error("assistantResponseMessage should have toolUses")
+		}
+	}
+
+	// currentMessage must NOT be the stale "list files" — should be "Continue"
+	if result.currentMessage == nil {
+		t.Fatal("currentMessage is nil")
+	}
+	uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage.userInputMessage is not a map")
+	}
+	if uim["content"] == "list files" {
+		t.Error("currentMessage content is stale 'list files' — should be replaced with 'Continue'")
+	}
+	if uim["content"] != "Continue" {
+		t.Errorf("currentMessage content = %q, want 'Continue'", uim["content"])
+	}
+}
+
 func TestConvertMessagesMultiTurnToolCalls(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "list files"},
@@ -1053,7 +1101,7 @@ func TestBuildKiroRequestHistoryIsSlice(t *testing.T) {
 	}
 	jsonBytes, _ := json.Marshal(hist)
 	if string(jsonBytes) != "[]" && string(jsonBytes) != "null" {
-		// Either [] or [{"userInputMessage":...}] is acceptable
+		// Either [] or [{\"userInputMessage\":...}] is acceptable
 		t.Logf("history marshals as %q", string(jsonBytes))
 	}
 }

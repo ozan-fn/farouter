@@ -142,20 +142,9 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 		}
 	}
 
-	// ── Pastikan history diakhiri assistantResponseMessage ──
-	if len(history) > 0 {
-		last := history[len(history)-1]
-		if _, ok := last["assistantResponseMessage"]; !ok {
-			history = append(history, map[string]any{
-				"assistantResponseMessage": map[string]any{
-					"content": "Continue",
-				},
-			})
-		}
-	}
-	// Kalau history tidak kosong dan pesan terakhir adalah assistant,
-	// currentMessage harus user. Kalau currentMessage adalah assistant,
-	// pindahkan ke history dan buat currentMessage baru "Continue"
+	// ── AIClient2API-style: handle last message type ──
+	// Case 1: currentMessage is assistant → move to history, create user "Continue"
+	// Case 2: currentMessage is user → only fix history ending if needed
 	if currentMsg != nil {
 		if _, ok := currentMsg["assistantResponseMessage"]; ok {
 			history = append(history, currentMsg)
@@ -165,6 +154,32 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 					"modelId": upstreamModel,
 					"origin":  "AI_EDITOR",
 				},
+			}
+		} else {
+			// Ensure history ends with assistantResponseMessage
+			// (required by Kiro API: history must end with assistant before currentMessage)
+			if len(history) > 0 {
+				last := history[len(history)-1]
+				if _, ok := last["assistantResponseMessage"]; !ok {
+					// Only add "Continue" if the last assistant doesn't already have toolUses
+					// that should be followed by toolResults in currentMessage
+					needsContinue := true
+					// If currentMessage has toolResults, don't insert extra assistant
+					if uim, ok := currentMsg["userInputMessage"].(map[string]any); ok {
+						if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
+							if trArr, ok := ctx["toolResults"].([]any); ok && len(trArr) > 0 {
+								needsContinue = false
+							}
+						}
+					}
+					if needsContinue {
+						history = append(history, map[string]any{
+							"assistantResponseMessage": map[string]any{
+								"content": "Continue",
+							},
+						})
+					}
+				}
 			}
 		}
 	}
@@ -494,6 +509,38 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 				"modelId": upstreamModel,
 				"origin":  "AI_EDITOR",
 			},
+		}
+	}
+
+	// ── Fix stale currentMessage when history ends with assistant(toolUses) ──
+	// If the last history entry is assistantResponseMessage with toolUses, and
+	// currentMessage doesn't have matching toolResults, it means the last OpenAI
+	// message was assistant (tool_calls) with no tool/user follow-up.
+	// In that case, currentMessage is stale (still points to an older user message).
+	// Replace it with a fresh "Continue" to avoid sending stale text to Bedrock
+	// which would cause TOOL_USE_RESULT_MISMATCH.
+	if len(history) > 0 {
+		if lastARM, ok := history[len(history)-1]["assistantResponseMessage"].(map[string]any); ok {
+			if tuArr, has := lastARM["toolUses"].([]any); has && len(tuArr) > 0 {
+				// Check if currentMessage has matching toolResults
+				hasMatchingResults := false
+				if uim, ok := currentMessage["userInputMessage"].(map[string]any); ok {
+					if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
+						if trArr, ok := ctx["toolResults"].([]any); ok && len(trArr) > 0 {
+							hasMatchingResults = true
+						}
+					}
+				}
+				if !hasMatchingResults {
+					currentMessage = map[string]any{
+						"userInputMessage": map[string]any{
+							"content": "Continue",
+							"modelId": upstreamModel,
+							"origin":  "AI_EDITOR",
+						},
+					}
+				}
+			}
 		}
 	}
 
