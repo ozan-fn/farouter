@@ -66,11 +66,13 @@ var PonytailPrompts = map[string]string{
 	}, " "),
 }
 
-// InjectPonytail appends the ponytail prompt into the Kiro payload's systemPrompt.
+// InjectPonytail appends the ponytail prompt into payload's system message.
+// Dispatches by body shape: Kiro (conversationState) → systemPrompt field;
+// OpenAI (messages[]/input[]) → system message entry.
 func InjectPonytail(payload map[string]any, level string) {
 	prompt, ok := PonytailPrompts[level]
 	if !ok {
 		return
 	}
-	injectKiroSystemPrompt(payload, prompt)
+	InjectSystemPrompt(payload, prompt)
 }

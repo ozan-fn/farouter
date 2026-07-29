@@ -22,6 +22,7 @@ import (
 	"farouter/internal/analytics"
 	"farouter/internal/kiro"
 	"farouter/internal/opencode"
+	"farouter/internal/rtk"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -649,6 +650,26 @@ func main() {
 	opencode.InitPool()
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+
+		// RTK: compress OpenAI tool_result content before dispatch
+		rtkMu.RLock()
+		rtkOn := rtkEnabled
+		rtkMu.RUnlock()
+		if rtkOn {
+			var bodyMap map[string]any
+			if json.Unmarshal(body, &bodyMap) == nil {
+				stats := &rtk.Stats{}
+				if rtk.CompressOpenAIMessages(bodyMap, stats) {
+					if compressed, err := json.Marshal(bodyMap); err == nil {
+						body = compressed
+						if line := rtk.FormatRtkLog(stats); line != "" {
+							log.Print(line)
+						}
+					}
+				}
+			}
+		}
+
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		var modelCheck struct {

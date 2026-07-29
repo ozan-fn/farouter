@@ -18,7 +18,13 @@ var lsNoiseDirs = map[string]bool{
 	".vercel": true, ".pytest_cache": true, ".mypy_cache": true, ".tox": true,
 	".venv": true, "venv": true, "env": true, "coverage": true, ".nyc_output": true,
 	".DS_Store": true, "Thumbs.db": true, ".idea": true, ".vscode": true, ".vs": true,
-	"*.egg-info": true, ".eggs": true,
+	".eggs": true,
+}
+
+// isLsNoise reports whether a directory or file name should be filtered from ls output.
+// Handles exact matches in lsNoiseDirs plus the *.egg-info suffix glob.
+func isLsNoise(name string) bool {
+	return lsNoiseDirs[name] || strings.HasSuffix(name, ".egg-info")
 }
 
 var reLsDate = regexp.MustCompile(`\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+(\d{4}|\d{2}:\d{2})\s+`)
@@ -71,7 +77,7 @@ func (p *LsParser) Parse(input string) string {
 		if name == "." || name == ".." {
 			continue
 		}
-		if lsNoiseDirs[name] {
+		if isLsNoise(name) {
 			continue
 		}
 		if ft == 'd' {

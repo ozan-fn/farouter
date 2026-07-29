@@ -151,6 +151,101 @@ func compressText(text string, stats *Stats, shape string) string {
 	return out
 }
 
+// CompressOpenAIMessages compresses tool_result content in an OpenAI-format body (map[string]any).
+// Mirrors VansRouter compressMessages in open-sse/rtk/index.js — OpenAI shapes only.
+// Mutates body in-place. Fail-open: panics are recovered and nil is returned.
+func CompressOpenAIMessages(body map[string]any, stats *Stats) (changed bool) {
+	if body == nil || stats == nil {
+		return false
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[rtk] CompressOpenAIMessages panic — passing through: %v", r)
+			changed = false
+		}
+	}()
+
+	// Resolve items: messages[] or input[]
+	var items []any
+	if msgs, ok := body["messages"].([]any); ok {
+		items = msgs
+	} else if inp, ok := body["input"].([]any); ok {
+		items = inp
+	}
+	if items == nil {
+		return false
+	}
+
+	for _, item := range items {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Shape 4: OpenAI Responses — { type:"function_call_output", output: string | [{type:"input_text", text}] }
+		if typ, _ := msg["type"].(string); typ == "function_call_output" {
+			if s, ok := msg["output"].(string); ok {
+				if c := compressText(s, stats, "openai-responses-string"); c != s {
+					msg["output"] = c
+					changed = true
+				}
+			} else if arr, ok := msg["output"].([]any); ok {
+				for _, p := range arr {
+					part, ok := p.(map[string]any)
+					if !ok {
+						continue
+					}
+					if part["type"] != "input_text" {
+						continue
+					}
+					if s, ok := part["text"].(string); ok {
+						if c := compressText(s, stats, "openai-responses-array"); c != s {
+							part["text"] = c
+							changed = true
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		role, _ := msg["role"].(string)
+		if role != "tool" {
+			continue
+		}
+
+		// Shape 1: { role:"tool", content: string }
+		if s, ok := msg["content"].(string); ok {
+			if c := compressText(s, stats, "openai-tool"); c != s {
+				msg["content"] = c
+				changed = true
+			}
+			continue
+		}
+
+		// Shape 1b: { role:"tool", content: [{type:"text", text}] }
+		if arr, ok := msg["content"].([]any); ok {
+			for _, p := range arr {
+				part, ok := p.(map[string]any)
+				if !ok {
+					continue
+				}
+				if part["type"] != "text" {
+					continue
+				}
+				if s, ok := part["text"].(string); ok {
+					if c := compressText(s, stats, "openai-tool-array"); c != s {
+						part["text"] = c
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return changed
+}
+
 func FormatRtkLog(stats *Stats) string {
 	if stats == nil || len(stats.Hits) == 0 {
 		return ""

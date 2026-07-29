@@ -110,25 +110,16 @@ var CavemanPrompts = map[string]string{
 	}, " "),
 }
 
-// InjectCaveman appends the caveman prompt into the Kiro payload's systemPrompt.
-// Mirrors VansRouter caveman.js + systemInject.js injectMessagesSystem for Kiro format.
+// InjectCaveman appends the caveman prompt into payload's system message.
+// Dispatches by body shape: Kiro (conversationState) → systemPrompt field;
+// OpenAI (messages[]/input[]) → system message entry.
+// Mirrors VansRouter caveman.js + systemInject.js.
 func InjectCaveman(payload map[string]any, level string) {
 	prompt, ok := CavemanPrompts[level]
 	if !ok {
 		return
 	}
-	injectKiroSystemPrompt(payload, prompt)
+	InjectSystemPrompt(payload, prompt)
 }
 
-// injectKiroSystemPrompt appends prompt to payload["systemPrompt"].
-// VansRouter systemInject.js default case: injectMessagesSystem → finds system message.
-// For Kiro the system prompt lives at top-level payload["systemPrompt"].
-func injectKiroSystemPrompt(payload map[string]any, prompt string) {
-	const sep = "\n\n"
-	existing, _ := payload["systemPrompt"].(string)
-	if existing != "" {
-		payload["systemPrompt"] = existing + sep + prompt
-	} else {
-		payload["systemPrompt"] = prompt
-	}
-}
+

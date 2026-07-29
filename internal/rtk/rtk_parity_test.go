@@ -358,6 +358,28 @@ func TestLsParity(t *testing.T) {
 		}
 	})
 
+	t.Run("egg-info glob suffix filtered", func(t *testing.T) {
+		// *.egg-info must match any name ending in .egg-info, not just the literal "*.egg-info"
+		input := "total 8\n" +
+			lsLine("drwxr-xr-x", "4096", "mypackage.egg-info") +
+			lsLine("drwxr-xr-x", "4096", "foo_bar.egg-info") +
+			lsLine("drwxr-xr-x", "4096", ".eggs") +
+			lsLine("-rw-r--r--", "512", "setup.py")
+		out := p.Parse(input)
+		if strings.Contains(out, "mypackage.egg-info") {
+			t.Errorf("expected mypackage.egg-info filtered, got:\n%s", out)
+		}
+		if strings.Contains(out, "foo_bar.egg-info") {
+			t.Errorf("expected foo_bar.egg-info filtered, got:\n%s", out)
+		}
+		if strings.Contains(out, ".eggs") {
+			t.Errorf("expected .eggs filtered, got:\n%s", out)
+		}
+		if !strings.Contains(out, "setup.py") {
+			t.Errorf("expected setup.py present, got:\n%s", out)
+		}
+	})
+
 	t.Run("empty input returned as-is", func(t *testing.T) {
 		assertEq(t, "empty", "no output", (&LsParser{}).Parse("no output"))
 	})
@@ -657,6 +679,336 @@ func TestAutoDetectFilterParity(t *testing.T) {
 	t.Run("nil for tiny input", func(t *testing.T) {
 		if f := autoDetectFilter("hello"); f != nil {
 			t.Errorf("expected nil, got %q", f.Name())
+		}
+	})
+}
+
+// ── CompressOpenAIMessages ────────────────────────────────────────────────────
+
+func makeGrepText() string {
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		sb.WriteString("src/file.go:" + itoa(i+1) + ":some content here that is reasonably long\n")
+	}
+	return sb.String()
+}
+
+func TestCompressOpenAIMessages(t *testing.T) {
+	big := makeGrepText() // >500 bytes, detected as grep
+
+	t.Run("shape1 tool string compressed", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "tool", "content": big},
+			},
+		}
+		stats := &Stats{}
+		changed := CompressOpenAIMessages(body, stats)
+		if !changed {
+			t.Fatal("expected changed=true")
+		}
+		msg := body["messages"].([]any)[0].(map[string]any)
+		if msg["content"] == big {
+			t.Error("content not compressed")
+		}
+		if len(stats.Hits) == 0 {
+			t.Error("expected hits")
+		}
+	})
+
+	t.Run("shape1b tool array compressed", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{
+					"role":    "tool",
+					"content": []any{map[string]any{"type": "text", "text": big}},
+				},
+			},
+		}
+		stats := &Stats{}
+		changed := CompressOpenAIMessages(body, stats)
+		if !changed {
+			t.Fatal("expected changed=true")
+		}
+		arr := body["messages"].([]any)[0].(map[string]any)["content"].([]any)
+		if arr[0].(map[string]any)["text"] == big {
+			t.Error("text not compressed")
+		}
+	})
+
+	t.Run("shape4 responses string compressed", func(t *testing.T) {
+		body := map[string]any{
+			"input": []any{
+				map[string]any{"type": "function_call_output", "output": big},
+			},
+		}
+		stats := &Stats{}
+		changed := CompressOpenAIMessages(body, stats)
+		if !changed {
+			t.Fatal("expected changed=true")
+		}
+		item := body["input"].([]any)[0].(map[string]any)
+		if item["output"] == big {
+			t.Error("output not compressed")
+		}
+	})
+
+	t.Run("shape4b responses array compressed", func(t *testing.T) {
+		body := map[string]any{
+			"input": []any{
+				map[string]any{
+					"type":   "function_call_output",
+					"output": []any{map[string]any{"type": "input_text", "text": big}},
+				},
+			},
+		}
+		stats := &Stats{}
+		changed := CompressOpenAIMessages(body, stats)
+		if !changed {
+			t.Fatal("expected changed=true")
+		}
+		arr := body["input"].([]any)[0].(map[string]any)["output"].([]any)
+		if arr[0].(map[string]any)["text"] == big {
+			t.Error("text not compressed")
+		}
+	})
+
+	t.Run("small text not changed", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "tool", "content": "small"},
+			},
+		}
+		stats := &Stats{}
+		changed := CompressOpenAIMessages(body, stats)
+		if changed {
+			t.Error("expected changed=false for small text")
+		}
+	})
+
+	t.Run("nil body ok", func(t *testing.T) {
+		stats := &Stats{}
+		CompressOpenAIMessages(nil, stats) // must not panic
+	})
+
+	t.Run("non-tool messages untouched", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "user", "content": big},
+				map[string]any{"role": "assistant", "content": big},
+			},
+		}
+		stats := &Stats{}
+		changed := CompressOpenAIMessages(body, stats)
+		if changed {
+			t.Error("non-tool messages must not be compressed")
+		}
+	})
+}
+
+// ── InjectOpenAISystemPrompt ──────────────────────────────────────────────────
+
+func TestInjectOpenAISystemPrompt(t *testing.T) {
+	t.Run("appends to existing system message string", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "system", "content": "original"},
+				map[string]any{"role": "user", "content": "hi"},
+			},
+		}
+		InjectOpenAISystemPrompt(body, "injected")
+		msg := body["messages"].([]any)[0].(map[string]any)
+		want := "original\n\ninjected"
+		if msg["content"] != want {
+			t.Errorf("got %q want %q", msg["content"], want)
+		}
+	})
+
+	t.Run("prepends new system message when none exists", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hi"},
+			},
+		}
+		InjectOpenAISystemPrompt(body, "injected")
+		msgs := body["messages"].([]any)
+		if len(msgs) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(msgs))
+		}
+		first := msgs[0].(map[string]any)
+		if first["role"] != "system" || first["content"] != "injected" {
+			t.Errorf("unexpected first message: %v", first)
+		}
+	})
+
+	t.Run("appends to developer role", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "developer", "content": "dev"},
+			},
+		}
+		InjectOpenAISystemPrompt(body, "extra")
+		msg := body["messages"].([]any)[0].(map[string]any)
+		want := "dev\n\nextra"
+		if msg["content"] != want {
+			t.Errorf("got %q want %q", msg["content"], want)
+		}
+	})
+
+	t.Run("injects into instructions field (Responses API)", func(t *testing.T) {
+		body := map[string]any{"instructions": "base", "input": []any{}}
+		InjectOpenAISystemPrompt(body, "extra")
+		if body["instructions"] != "base\n\nextra" {
+			t.Errorf("got %q", body["instructions"])
+		}
+	})
+
+	t.Run("appends to system content array", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{
+					"role":    "system",
+					"content": []any{map[string]any{"type": "text", "text": "a"}},
+				},
+			},
+		}
+		InjectOpenAISystemPrompt(body, "extra")
+		arr := body["messages"].([]any)[0].(map[string]any)["content"].([]any)
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 parts, got %d", len(arr))
+		}
+		last := arr[1].(map[string]any)
+		if last["type"] != "input_text" || last["text"] != "extra" {
+			t.Errorf("unexpected last part: %v", last)
+		}
+	})
+
+	t.Run("uses input[] when no messages[]", func(t *testing.T) {
+		body := map[string]any{
+			"input": []any{
+				map[string]any{"role": "user", "content": "hi"},
+			},
+		}
+		InjectOpenAISystemPrompt(body, "injected")
+		items := body["input"].([]any)
+		if len(items) != 2 {
+			t.Fatalf("expected 2 items, got %d", len(items))
+		}
+		if items[0].(map[string]any)["role"] != "system" {
+			t.Error("expected system prepended to input[]")
+		}
+	})
+}
+
+// ── InjectTerminationPrompt / InjectToolProtocolPrompt ────────────────────────
+
+func TestInjectTerminationPrompt(t *testing.T) {
+	t.Run("injects into OpenAI messages", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "system", "content": "base"},
+			},
+		}
+		ok := InjectTerminationPrompt(body)
+		if !ok {
+			t.Fatal("expected true")
+		}
+		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if !strings.Contains(content, TerminationPrompt) {
+			t.Error("termination prompt not found")
+		}
+	})
+
+	t.Run("idempotent — does not inject twice", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "system", "content": "base"},
+			},
+		}
+		InjectTerminationPrompt(body)
+		ok2 := InjectTerminationPrompt(body)
+		if ok2 {
+			t.Error("second inject should be skipped (idempotent)")
+		}
+		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if strings.Count(content, TerminationPrompt) != 1 {
+			t.Error("prompt appeared more than once")
+		}
+	})
+
+	t.Run("injects into Kiro systemPrompt", func(t *testing.T) {
+		body := map[string]any{
+			"systemPrompt":      "existing",
+			"conversationState": map[string]any{},
+		}
+		ok := InjectTerminationPrompt(body)
+		if !ok {
+			t.Fatal("expected true")
+		}
+		sp := body["systemPrompt"].(string)
+		if !strings.Contains(sp, TerminationPrompt) {
+			t.Error("not injected into systemPrompt")
+		}
+	})
+
+	t.Run("injects into Responses instructions", func(t *testing.T) {
+		body := map[string]any{"instructions": "base"}
+		InjectTerminationPrompt(body)
+		inst := body["instructions"].(string)
+		if !strings.Contains(inst, TerminationPrompt) {
+			t.Error("not injected into instructions")
+		}
+	})
+}
+
+func TestInjectToolProtocolPrompt(t *testing.T) {
+	t.Run("basic injection without tool names", func(t *testing.T) {
+		body := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "system", "content": "base"},
+			},
+		}
+		InjectToolProtocolPrompt(body, nil)
+		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if !strings.Contains(content, ToolProtocolPrompt) {
+			t.Error("tool protocol prompt not found")
+		}
+	})
+
+	t.Run("includes valid tool names", func(t *testing.T) {
+		body := map[string]any{"messages": []any{map[string]any{"role": "system", "content": "x"}}}
+		InjectToolProtocolPrompt(body, []string{"read_file", "write_file", "read_file"})
+		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if !strings.Contains(content, "read_file") || !strings.Contains(content, "write_file") {
+			t.Error("tool names not in prompt")
+		}
+		if strings.Count(content, "read_file") != 1 {
+			t.Error("duplicate tool name should be deduped")
+		}
+	})
+
+	t.Run("caps tool names at 80", func(t *testing.T) {
+		names := make([]string, 100)
+		for i := range names {
+			names[i] = "tool_" + itoa(i)
+		}
+		body := map[string]any{"messages": []any{map[string]any{"role": "system", "content": "x"}}}
+		InjectToolProtocolPrompt(body, names)
+		content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if strings.Contains(content, "tool_80") {
+			t.Error("tool_80 should have been cut off at cap 80")
+		}
+		if !strings.Contains(content, "tool_79") {
+			t.Error("tool_79 should be present")
+		}
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		body := map[string]any{"messages": []any{map[string]any{"role": "system", "content": "x"}}}
+		InjectToolProtocolPrompt(body, []string{"foo"})
+		ok2 := InjectToolProtocolPrompt(body, []string{"foo"})
+		if ok2 {
+			t.Error("second call should be skipped")
 		}
 	})
 }

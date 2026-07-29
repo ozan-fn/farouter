@@ -200,6 +200,14 @@ func injectCavemanPonytail(payload map[string]any, req ChatRequest) {
 	if req.PonytailLevel != "" {
 		rtk.InjectPonytail(payload, req.PonytailLevel)
 	}
+	rtk.InjectTerminationPrompt(payload)
+	if len(req.Tools) > 0 {
+		toolNames := make([]string, len(req.Tools))
+		for i, t := range req.Tools {
+			toolNames[i] = t.Function.Name
+		}
+		rtk.InjectToolProtocolPrompt(payload, toolNames)
+	}
 }
 
 func resolveKiroEffort(req ChatRequest) string {
