@@ -146,14 +146,35 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 	// Case 1: currentMessage is assistant → move to history, create user "Continue"
 	// Case 2: currentMessage is user → only fix history ending if needed
 	if currentMsg != nil {
-		if _, ok := currentMsg["assistantResponseMessage"]; ok {
+		if arm, ok := currentMsg["assistantResponseMessage"].(map[string]any); ok {
 			history = append(history, currentMsg)
+			uim := map[string]any{
+				"content": "Continue",
+				"modelId": upstreamModel,
+				"origin":  "AI_EDITOR",
+			}
+			// If the assistant had toolUses, create synthetic toolResults
+			if tuArr, has := arm["toolUses"].([]any); has && len(tuArr) > 0 {
+				var syntheticResults []any
+				for _, tu := range tuArr {
+					if tuMap, ok := tu.(map[string]any); ok {
+						if id, ok := tuMap["toolUseId"].(string); ok && id != "" {
+							syntheticResults = append(syntheticResults, map[string]any{
+								"toolUseId": id,
+								"status":    "success",
+								"content":   []any{map[string]any{"text": "(tool execution was interrupted)"}},
+							})
+						}
+					}
+				}
+				if len(syntheticResults) > 0 {
+					uim["userInputMessageContext"] = map[string]any{
+						"toolResults": syntheticResults,
+					}
+				}
+			}
 			currentMsg = map[string]any{
-				"userInputMessage": map[string]any{
-					"content": "Continue",
-					"modelId": upstreamModel,
-					"origin":  "AI_EDITOR",
-				},
+				"userInputMessage": uim,
 			}
 		} else {
 			// Ensure history ends with assistantResponseMessage
@@ -559,12 +580,32 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 					}
 				}
 				if !hasMatchingResults {
+					// Create synthetic toolResults for each missing toolUseId to satisfy
+					// Bedrock's requirement that every tool_use must have a tool_result
+					var syntheticResults []any
+					for _, tu := range tuArr {
+						if tuMap, ok := tu.(map[string]any); ok {
+							if id, ok := tuMap["toolUseId"].(string); ok && id != "" {
+								syntheticResults = append(syntheticResults, map[string]any{
+									"toolUseId": id,
+									"status":    "success",
+									"content":   []any{map[string]any{"text": "(tool execution was interrupted)"}},
+								})
+							}
+						}
+					}
+					uim := map[string]any{
+						"content": "Continue",
+						"modelId": upstreamModel,
+						"origin":  "AI_EDITOR",
+					}
+					if len(syntheticResults) > 0 {
+						uim["userInputMessageContext"] = map[string]any{
+							"toolResults": syntheticResults,
+						}
+					}
 					currentMessage = map[string]any{
-						"userInputMessage": map[string]any{
-							"content": "Continue",
-							"modelId": upstreamModel,
-							"origin":  "AI_EDITOR",
-						},
+						"userInputMessage": uim,
 					}
 				}
 			}

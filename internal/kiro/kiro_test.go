@@ -396,9 +396,8 @@ func TestConvertMessagesToolResultIDMismatchWithResults(t *testing.T) {
 		}
 	}
 
-	// currentMessage should be "Continue" because the stale user message
-	// from history (which was created from the tool result for call_A)
-	// doesn't have matching toolResults for call_B
+	// currentMessage should be "Continue" with synthetic toolResults for call_B
+	// (to satisfy Bedrock's requirement that every tool_use must have a tool_result)
 	if result.currentMessage == nil {
 		t.Fatal("currentMessage is nil")
 	}
@@ -409,10 +408,18 @@ func TestConvertMessagesToolResultIDMismatchWithResults(t *testing.T) {
 	if uim["content"] != "Continue" {
 		t.Errorf("currentMessage content = %q, want 'Continue'", uim["content"])
 	}
-	// Verify there are NO toolResults in currentMessage
-	if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
-		if trArr, ok := ctx["toolResults"]; ok {
-			t.Errorf("currentMessage should not have toolResults, got %v", trArr)
+	// Verify synthetic toolResults are present with correct ID for call_B
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage should have userInputMessageContext with synthetic toolResults")
+	}
+	trArr, ok := ctx["toolResults"].([]any)
+	if !ok || len(trArr) != 1 {
+		t.Fatalf("currentMessage should have 1 synthetic toolResult, got %v", trArr)
+	}
+	if tr, ok := trArr[0].(map[string]any); ok {
+		if tr["toolUseId"] != "call_B" {
+			t.Errorf("synthetic toolResult toolUseId = %q, want 'call_B'", tr["toolUseId"])
 		}
 	}
 }
@@ -489,6 +496,144 @@ func TestConvertMessagesToolResultIDMatch(t *testing.T) {
 		if tr["toolUseId"] != "call_2" {
 			t.Errorf("toolResult toolUseId = %q, want 'call_2'", tr["toolUseId"])
 		}
+	}
+}
+
+// TestConvertMessagesStaleCurrentMessageWithSyntheticToolResults verifies the fix for
+// TOOL_USE_RESULT_MISMATCH: when the last history entry is assistant with toolUses
+// and currentMessage has no matching toolResults, the fix must create synthetic
+// toolResults for each toolUseId to satisfy Bedrock's requirement.
+func TestConvertMessagesStaleCurrentMessageWithSyntheticToolResults(t *testing.T) {
+	// Scenario: last OpenAI message is assistant with tool_calls, no tool results follow
+	messages := []Message{
+		{Role: "user", Content: "list files"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_A", Type: "function", Function: ToolCallFunction{Name: "ls", Arguments: `{}`}},
+			},
+		},
+		{Role: "tool", Content: "file1.go", ToolCallID: "call_A"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_B", Type: "function", Function: ToolCallFunction{Name: "readFile", Arguments: `{}`}},
+			},
+		},
+	}
+
+	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+
+	// History should end with assistantResponseMessage with toolUses=[call_B]
+	if len(result.history) == 0 {
+		t.Fatal("history should not be empty")
+	}
+	last := result.history[len(result.history)-1]
+	arm, ok := last["assistantResponseMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("history should end with assistantResponseMessage")
+	}
+	tuArr, has := arm["toolUses"].([]any)
+	if !has || len(tuArr) == 0 {
+		t.Fatal("assistantResponseMessage should have toolUses")
+	}
+	if tu, ok := tuArr[0].(map[string]any); ok {
+		if tu["toolUseId"] != "call_B" {
+			t.Errorf("last toolUseId = %q, want 'call_B'", tu["toolUseId"])
+		}
+	}
+
+	// currentMessage must have synthetic toolResults for call_B
+	if result.currentMessage == nil {
+		t.Fatal("currentMessage is nil")
+	}
+	uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage.userInputMessage is not a map")
+	}
+	if uim["content"] != "Continue" {
+		t.Errorf("currentMessage content = %q, want 'Continue'", uim["content"])
+	}
+	// Verify synthetic toolResults are present with correct ID
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage should have userInputMessageContext with synthetic toolResults")
+	}
+	trArr, ok := ctx["toolResults"].([]any)
+	if !ok || len(trArr) != 1 {
+		t.Fatalf("currentMessage should have 1 synthetic toolResult, got %v", trArr)
+	}
+	if tr, ok := trArr[0].(map[string]any); ok {
+		if tr["toolUseId"] != "call_B" {
+			t.Errorf("synthetic toolResult toolUseId = %q, want 'call_B'", tr["toolUseId"])
+		}
+		if tr["status"] != "success" {
+			t.Errorf("synthetic toolResult status = %q, want 'success'", tr["status"])
+		}
+	}
+}
+
+// TestConvertMessagesMultipleToolUsesWithoutResults verifies that when the last
+// assistant has MULTIPLE toolUses and no matching toolResults, synthetic results
+// are created for ALL toolUseIds.
+func TestConvertMessagesMultipleToolUsesWithoutResults(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "do everything"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []ToolCall{
+				{ID: "call_A", Type: "function", Function: ToolCallFunction{Name: "ls", Arguments: `{}`}},
+				{ID: "call_B", Type: "function", Function: ToolCallFunction{Name: "pwd", Arguments: `{}`}},
+			},
+		},
+	}
+
+	result := convertMessages(messages, nil, "claude-sonnet-4.5", false)
+
+	// History should end with assistant with toolUses=[call_A, call_B]
+	last := result.history[len(result.history)-1]
+	arm, ok := last["assistantResponseMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("history should end with assistantResponseMessage")
+	}
+	tuArr, has := arm["toolUses"].([]any)
+	if !has || len(tuArr) != 2 {
+		t.Fatalf("expected 2 toolUses, got %v", tuArr)
+	}
+
+	// currentMessage must have synthetic toolResults for BOTH call_A and call_B
+	if result.currentMessage == nil {
+		t.Fatal("currentMessage is nil")
+	}
+	uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage.userInputMessage is not a map")
+	}
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage should have userInputMessageContext")
+	}
+	trArr, ok := ctx["toolResults"].([]any)
+	if !ok || len(trArr) != 2 {
+		t.Fatalf("currentMessage should have 2 synthetic toolResults, got %d", len(trArr))
+	}
+	// Check both IDs are present
+	ids := map[string]bool{}
+	for _, tr := range trArr {
+		if trMap, ok := tr.(map[string]any); ok {
+			if id, ok := trMap["toolUseId"].(string); ok {
+				ids[id] = true
+			}
+		}
+	}
+	if !ids["call_A"] {
+		t.Error("missing synthetic toolResult for call_A")
+	}
+	if !ids["call_B"] {
+		t.Error("missing synthetic toolResult for call_B")
 	}
 }
 
