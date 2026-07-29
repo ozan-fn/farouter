@@ -18,6 +18,8 @@ cache:
 build_script:
   - go version
   - CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .
+  - sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends upx
+  - upx --best --lzma farouter
 
 # Langkah instalasi dependency sistem dan eksekusi deployment via LFTP
 deploy_script:
