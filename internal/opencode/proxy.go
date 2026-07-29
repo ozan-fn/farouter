@@ -267,7 +267,7 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		log.Printf("opencode direct: HTTP %d", resp.StatusCode)
 	}
 
-	http.Error(w, `{"error":"all proxies and direct failed"}`, 502)
+	http.Error(w, `{"error":"all proxies and direct failed"}`, http.StatusBadGateway)
 }
 
 func InitPool() {

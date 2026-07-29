@@ -1,10 +1,20 @@
 package kiro
 
+// VansRouter equivalents:
+//   ResolveModel                  → open-sse/config/kiroConstants.js resolveKiroModel()
+//   BuildThinkingSystemPrefix     → open-sse/config/kiroConstants.js buildThinkingSystemPrefix()
+//   BuildAdditionalModelRequestFields → open-sse/config/kiroConstants.js buildKiroAdditionalModelRequestFields()
+//   DefaultProfileArn             → open-sse/config/kiroConstants.js resolveDefaultProfileArn()
+//   ResolveThinkingBudget         → open-sse/config/kiroConstants.js resolveKiroThinkingBudget()
+//   IsGPTModel                    → open-sse/config/kiroConstants.js inline
+//   supportsAdditionalFields      → open-sse/config/kiroConstants.js supportsKiroAdditionalModelRequestFields()
+
 import (
 	"fmt"
 	"strings"
 )
 
+// ResolveModel — VansRouter: kiroConstants.js resolveKiroModel()
 func ResolveModel(model string) ResolvedModel {
 	model = strings.TrimPrefix(model, "kr/")
 
@@ -23,7 +33,6 @@ func ResolveModel(model string) ResolvedModel {
 	if model == "" {
 		model = AutoModel
 	}
-	// Pass "auto" through to upstream as-is (Kiro upstream resolves it)
 	if model == "auto" {
 		return ResolvedModel{Upstream: "auto", Agentic: agentic, Thinking: thinking}
 	}
@@ -31,6 +40,7 @@ func ResolveModel(model string) ResolvedModel {
 	return ResolvedModel{Upstream: model, Agentic: agentic, Thinking: thinking}
 }
 
+// DefaultProfileArn — VansRouter: kiroConstants.js resolveDefaultProfileArn()
 func DefaultProfileArn(authMethod string) string {
 	if authMethod == "google" || authMethod == "github" {
 		return DefaultProfileArnSocial
@@ -38,6 +48,7 @@ func DefaultProfileArn(authMethod string) string {
 	return DefaultProfileArnBuilderID
 }
 
+// BuildThinkingSystemPrefix — VansRouter: kiroConstants.js buildThinkingSystemPrefix()
 func BuildThinkingSystemPrefix(budget int) string {
 	if budget <= 0 {
 		budget = ThinkingBudgetDefault
@@ -51,10 +62,12 @@ func BuildThinkingSystemPrefix(budget int) string {
 	return fmt.Sprintf("<thinking_mode>enabled</thinking_mode><max_thinking_length>%d</max_thinking_length>", budget)
 }
 
+// IsGPTModel — VansRouter: kiroConstants.js inline effort path detection
 func IsGPTModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "gpt-5.6")
 }
 
+// ResolveThinkingBudget — VansRouter: kiroConstants.js resolveKiroThinkingBudget()
 func ResolveThinkingBudget(effort string, model string) int {
 	if effort != "" {
 		switch strings.ToLower(effort) {
@@ -75,25 +88,29 @@ func ResolveThinkingBudget(effort string, model string) int {
 	return -1
 }
 
+// BuildAdditionalModelRequestFields — VansRouter: kiroConstants.js buildKiroAdditionalModelRequestFields()
 func BuildAdditionalModelRequestFields(effort string, model string) map[string]any {
 	e := normalizeEffort(effort)
 	if e == "" {
 		return nil
 	}
 	if IsGPTModel(model) {
+		// VansRouter: reasoning effort field for GPT
 		return map[string]any{
 			"reasoning": map[string]any{"effort": e},
 		}
 	}
 	if supportsAdditionalFields(model) {
+		// VansRouter: output_config + thinking fields for Claude 4.5+
 		return map[string]any{
-			"thinking": map[string]any{"type": "adaptive", "display": "summarized"},
+			"thinking":     map[string]any{"type": "adaptive", "display": "summarized"},
 			"output_config": map[string]any{"effort": e},
 		}
 	}
 	return nil
 }
 
+// normalizeEffort — VansRouter: kiroConstants.js extractKiroEffortLevel()
 func normalizeEffort(raw string) string {
 	switch strings.ToLower(raw) {
 	case "none", "off", "disabled", "":
@@ -106,6 +123,7 @@ func normalizeEffort(raw string) string {
 	return ""
 }
 
+// supportsAdditionalFields — VansRouter: kiroConstants.js supportsKiroAdditionalModelRequestFields()
 func supportsAdditionalFields(model string) bool {
 	m := strings.ToLower(model)
 	if strings.Contains(m, "gpt-5.6") {
@@ -114,11 +132,8 @@ func supportsAdditionalFields(model string) bool {
 	if !strings.Contains(m, "claude") {
 		return false
 	}
-	// Match both old dot format (claude-sonnet-4.5) and new dash format (claude-sonnet-4-5)
-	// Extract the version segment (e.g. "4-5" or "4.5") and parse major.minor
 	parts := strings.Split(m, "-")
 	for _, p := range parts {
-		// Dot format: "4.5" → major=4, minor=5
 		if len(p) >= 3 && p[1] == '.' {
 			major := int(p[0] - '0')
 			if major > 4 {
@@ -130,7 +145,6 @@ func supportsAdditionalFields(model string) bool {
 				return minor > 5
 			}
 		}
-		// Dash format: "4-5" → major=4, minor=5
 		if idx := strings.Index(p, "-"); idx > 0 {
 			major := 0
 			minor := 0

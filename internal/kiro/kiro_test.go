@@ -748,6 +748,137 @@ func TestConvertMessagesWithoutTools(t *testing.T) {
 	}
 }
 
+// TestConvertMessagesSystemInstructions verifies the VansRouter pattern:
+// system role messages are wrapped in <instructions> tags and placed as
+// user messages (not system role).
+func TestConvertMessagesSystemInstructions(t *testing.T) {
+	t.Run("single system message", func(t *testing.T) {
+		messages := []Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "hello"},
+		}
+
+		result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
+
+		if result.currentMessage == nil {
+			t.Fatal("currentMessage is nil")
+		}
+		uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+		if !ok {
+			t.Fatal("currentMessage.userInputMessage is not a map")
+		}
+		content, _ := uim["content"].(string)
+		if !strings.Contains(content, "<instructions>") {
+			t.Errorf("content missing <instructions> tag: %q", content)
+		}
+		if !strings.Contains(content, "You are a helpful assistant.") {
+			t.Errorf("content missing system text: %q", content)
+		}
+		if !strings.Contains(content, "</instructions>") {
+			t.Errorf("content missing </instructions> tag: %q", content)
+		}
+		// Must also have the user message
+		if !strings.Contains(content, "hello") {
+			t.Errorf("content missing user text 'hello': %q", content)
+		}
+		// systemContent should be set (for buildKiroRequest)
+		if result.systemContent != "You are a helpful assistant." {
+			t.Errorf("systemContent = %q, want 'You are a helpful assistant.'", result.systemContent)
+		}
+	})
+
+	t.Run("system with multi-turn", func(t *testing.T) {
+		messages := []Message{
+			{Role: "system", Content: "Be concise."},
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "Hello!"},
+			{Role: "user", Content: "how are you?"},
+		}
+
+		result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
+
+		// history[0] should be the <instructions> user message
+		if len(result.history) < 2 {
+			t.Fatalf("expected >= 2 history entries, got %d", len(result.history))
+		}
+		first, ok := result.history[0]["userInputMessage"].(map[string]any)
+		if !ok {
+			t.Fatal("history[0] is not userInputMessage")
+		}
+		content, _ := first["content"].(string)
+		if !strings.Contains(content, "<instructions>") || !strings.Contains(content, "Be concise.") {
+			t.Errorf("history[0] missing instructions: %q", content)
+		}
+		// Should also contain "hi" — system + user merged
+		if !strings.Contains(content, "hi") {
+			t.Errorf("history[0] missing user content 'hi': %q", content)
+		}
+
+		// currentMessage should be the last user message
+		uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+		if !ok {
+			t.Fatal("currentMessage.userInputMessage is not a map")
+		}
+		if uim["content"] != "how are you?" {
+			t.Errorf("currentMessage content = %q, want 'how are you?'", uim["content"])
+		}
+	})
+
+	t.Run("system with empty content", func(t *testing.T) {
+		messages := []Message{
+			{Role: "system", Content: ""},
+			{Role: "user", Content: "hello"},
+		}
+
+		result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
+
+		// Empty system should be skipped entirely
+		uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+		if !ok {
+			t.Fatal("currentMessage.userInputMessage is not a map")
+		}
+		content, _ := uim["content"].(string)
+		if strings.Contains(content, "<instructions>") {
+			t.Errorf("empty system should not produce <instructions> tag, got: %q", content)
+		}
+		if content != "hello" {
+			t.Errorf("content = %q, want 'hello'", content)
+		}
+		if result.systemContent != "" {
+			t.Errorf("systemContent = %q, want empty", result.systemContent)
+		}
+	})
+
+	t.Run("system with array content", func(t *testing.T) {
+		messages := []Message{
+			{
+				Role: "system",
+				Content: []any{
+					map[string]any{"type": "text", "text": "You are Claude."},
+				},
+			},
+			{Role: "user", Content: "hello"},
+		}
+
+		result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
+
+		uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
+		if !ok {
+			t.Fatal("currentMessage.userInputMessage is not a map")
+		}
+		content, _ := uim["content"].(string)
+		if !strings.Contains(content, "You are Claude.") {
+			t.Errorf("content missing system text: %q", content)
+		}
+		if !strings.Contains(content, "<instructions>") {
+			t.Errorf("content missing <instructions>: %q", content)
+		}
+		if result.systemContent != "You are Claude." {
+			t.Errorf("systemContent = %q, want 'You are Claude.'", result.systemContent)
+		}
+	})
+}
+
 func TestConvertMessagesWithToolCallsNoTools(t *testing.T) {
 	// AIClient2API style: toolUses always preserved even without tools in request
 	messages := []Message{
@@ -805,204 +936,9 @@ func TestConvertMessagesWithToolCallsNoTools(t *testing.T) {
 	}
 }
 
-func TestMergeConsecutiveRolesAIClient2API(t *testing.T) {
-	t.Run("merges consecutive user messages", func(t *testing.T) {
-		history := []map[string]any{
-			{"userInputMessage": map[string]any{"content": "a"}},
-			{"userInputMessage": map[string]any{"content": "b"}},
-			{"assistantResponseMessage": map[string]any{"content": "c"}},
-		}
 
-		result := mergeConsecutiveRolesAIClient2API(history, "")
 
-		if len(result) != 2 {
-			t.Fatalf("len = %d, want 2", len(result))
-		}
-		if result[0]["userInputMessage"] == nil {
-			t.Error("result[0] should be user")
-		}
-		uim := result[0]["userInputMessage"].(map[string]any)
-		if uim["content"] != "a\nb" {
-			t.Errorf("merged content = %q, want 'a\\nb'", uim["content"])
-		}
-		if result[1]["assistantResponseMessage"] == nil {
-			t.Error("result[1] should be assistant")
-		}
-	})
 
-	t.Run("merges consecutive assistant messages", func(t *testing.T) {
-		history := []map[string]any{
-			{"userInputMessage": map[string]any{"content": "a"}},
-			{"assistantResponseMessage": map[string]any{"content": "b"}},
-			{"assistantResponseMessage": map[string]any{"content": "c"}},
-		}
-
-		result := mergeConsecutiveRolesAIClient2API(history, "")
-
-		if len(result) != 2 {
-			t.Fatalf("len = %d, want 2", len(result))
-		}
-		if result[1]["assistantResponseMessage"] == nil {
-			t.Error("result[1] should be assistant")
-		}
-		arm := result[1]["assistantResponseMessage"].(map[string]any)
-		if arm["content"] != "b\nc" {
-			t.Errorf("merged content = %q, want 'b\\n\\nc'", arm["content"])
-		}
-	})
-
-	t.Run("no change when already alternating", func(t *testing.T) {
-		history := []map[string]any{
-			{"userInputMessage": map[string]any{"content": "a"}},
-			{"assistantResponseMessage": map[string]any{"content": "b"}},
-			{"userInputMessage": map[string]any{"content": "c"}},
-		}
-
-		result := mergeConsecutiveRolesAIClient2API(history, "")
-
-		if len(result) != 3 {
-			t.Fatalf("len = %d, want 3", len(result))
-		}
-	})
-
-	t.Run("single item returns as-is", func(t *testing.T) {
-		history := []map[string]any{
-			{"userInputMessage": map[string]any{"content": "a"}},
-		}
-
-		result := mergeConsecutiveRolesAIClient2API(history, "")
-
-		if len(result) != 1 {
-			t.Fatalf("len = %d, want 1", len(result))
-		}
-	})
-
-	t.Run("mixed consecutive merges correctly", func(t *testing.T) {
-		history := []map[string]any{
-			{"userInputMessage": map[string]any{"content": "a"}},
-			{"userInputMessage": map[string]any{"content": "b"}},
-			{"assistantResponseMessage": map[string]any{"content": "c"}},
-			{"assistantResponseMessage": map[string]any{"content": "d"}},
-		}
-
-		result := mergeConsecutiveRolesAIClient2API(history, "")
-
-		if len(result) != 2 {
-			t.Fatalf("len = %d, want 2", len(result))
-		}
-		uim := result[0]["userInputMessage"].(map[string]any)
-		if uim["content"] != "a\nb" {
-			t.Errorf("merged user content = %q", uim["content"])
-		}
-		arm := result[1]["assistantResponseMessage"].(map[string]any)
-		if arm["content"] != "c\nd" {
-			t.Errorf("merged assistant content = %q", arm["content"])
-		}
-	})
-
-	t.Run("merges user with toolResults context", func(t *testing.T) {
-		history := []map[string]any{
-			{
-				"userInputMessage": map[string]any{
-					"content": "step 1",
-					"userInputMessageContext": map[string]any{
-						"toolResults": []any{
-							map[string]any{"toolUseId": "call_1"},
-						},
-					},
-				},
-			},
-			{
-				"userInputMessage": map[string]any{
-					"content": "step 2",
-					"userInputMessageContext": map[string]any{
-						"toolResults": []any{
-							map[string]any{"toolUseId": "call_2"},
-						},
-					},
-				},
-			},
-			{"assistantResponseMessage": map[string]any{"content": "done"}},
-		}
-
-		result := mergeConsecutiveRolesAIClient2API(history, "")
-
-		if len(result) != 2 {
-			t.Fatalf("len = %d, want 2", len(result))
-		}
-		uim := result[0]["userInputMessage"].(map[string]any)
-		if uim["content"] != "step 1\nstep 2" {
-			t.Errorf("merged content = %q", uim["content"])
-		}
-		ctx := uim["userInputMessageContext"].(map[string]any)
-		trArr := ctx["toolResults"].([]any)
-		if len(trArr) != 2 {
-			t.Errorf("merged toolResults len = %d, want 2", len(trArr))
-		}
-	})
-
-	t.Run("merges assistant with toolUses context", func(t *testing.T) {
-		history := []map[string]any{
-			{"userInputMessage": map[string]any{"content": "hi"}},
-			{
-				"assistantResponseMessage": map[string]any{
-					"content": "Let me check",
-					"toolUses": []any{
-						map[string]any{"toolUseId": "call_1"},
-					},
-				},
-			},
-			{
-				"assistantResponseMessage": map[string]any{
-					"content": "Here is the result",
-					"toolUses": []any{
-						map[string]any{"toolUseId": "call_2"},
-					},
-				},
-			},
-		}
-
-		result := mergeConsecutiveRolesAIClient2API(history, "")
-
-		if len(result) != 2 {
-			t.Fatalf("len = %d, want 2", len(result))
-		}
-		arm := result[1]["assistantResponseMessage"].(map[string]any)
-		if arm["content"] != "Let me check\nHere is the result" {
-			t.Errorf("merged content = %q", arm["content"])
-		}
-		tuArr := arm["toolUses"].([]any)
-		if len(tuArr) != 2 {
-			t.Errorf("merged toolUses len = %d, want 2", len(tuArr))
-		}
-	})
-}
-
-func TestMergeConsecutiveRoles(t *testing.T) {
-	history := []map[string]any{
-		{"userInputMessage": map[string]any{"content": "hello"}},
-		{"userInputMessage": map[string]any{"content": "world"}},
-		{"assistantResponseMessage": map[string]any{"content": "hi"}},
-		{"assistantResponseMessage": map[string]any{"content": "there"}},
-	}
-
-	merged := mergeConsecutiveRolesAIClient2API(history, "")
-
-	if len(merged) != 2 {
-		t.Fatalf("len = %d, want 2", len(merged))
-	}
-	if merged[0]["userInputMessage"] == nil {
-		t.Error("merged[0] is not userInputMessage")
-	}
-	if merged[1]["assistantResponseMessage"] == nil {
-		t.Error("merged[1] is not assistantResponseMessage")
-	}
-
-	uim := merged[0]["userInputMessage"].(map[string]any)
-	if uim["content"] != "hello\nworld" {
-		t.Errorf("merged content = %q, want 'hello\\nworld'", uim["content"])
-	}
-}
 
 func TestParseToolInput(t *testing.T) {
 	tests := []struct {
@@ -1035,6 +971,389 @@ func TestParseToolInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHandleKiroToolUseEventFragmentType verifies fragment type validation
+// (VansRouter pattern: string chunks must stay string, object must stay object).
+func TestHandleKiroToolUseEventFragmentType(t *testing.T) {
+	t.Run("string→object transition rejected", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+
+		// First: string payload
+		payload1 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_1",
+					"name":      "readFile",
+					"input":     `{"file": "/tmp/test"}`,
+				},
+			},
+		}
+		err := handleKiroToolUseEvent(payload1, state, 8*1024*1024)
+		if err != nil {
+			t.Fatalf("first call (string) should succeed: %v", err)
+		}
+
+		// Second: object payload for same toolUseId → should fail
+		payload2 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_1",
+					"name":      "readFile",
+					"input":     map[string]any{"file": "/tmp/test"},
+				},
+			},
+		}
+		err = handleKiroToolUseEvent(payload2, state, 8*1024*1024)
+		if err == nil {
+			t.Fatal("expected error for string→object transition")
+		}
+		if !strings.Contains(err.Error(), "was string, got object") {
+			t.Errorf("error message = %q, want 'was string, got object'", err.Error())
+		}
+	})
+
+	t.Run("object→string transition rejected", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+
+		// First: object payload
+		payload1 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_2",
+					"name":      "editFile",
+					"input":     map[string]any{"path": "/tmp/test", "content": "hello"},
+				},
+			},
+		}
+		err := handleKiroToolUseEvent(payload1, state, 8*1024*1024)
+		if err != nil {
+			t.Fatalf("first call (object) should succeed: %v", err)
+		}
+
+		// Second: string payload for same toolUseId → should fail
+		payload2 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_2",
+					"name":      "editFile",
+					"input":     `{}`,
+				},
+			},
+		}
+		err = handleKiroToolUseEvent(payload2, state, 8*1024*1024)
+		if err == nil {
+			t.Fatal("expected error for object→string transition")
+		}
+		if !strings.Contains(err.Error(), "was object, got string") {
+			t.Errorf("error message = %q, want 'was object, got string'", err.Error())
+		}
+	})
+
+	t.Run("same type multiple calls ok", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+
+		// Multiple string chunks for same tool → should succeed
+		for i := 0; i < 3; i++ {
+			payload := map[string]any{
+				"toolUseEvent": []any{
+					map[string]any{
+						"toolUseId": "call_3",
+						"name":      "search",
+						"input":     `{"q": "hello"}`,
+					},
+				},
+			}
+			err := handleKiroToolUseEvent(payload, state, 8*1024*1024)
+			if err != nil {
+				t.Fatalf("call %d should succeed: %v", i+1, err)
+			}
+		}
+	})
+}
+
+// TestHandleKiroToolUseEventPlaceholderFilter verifies that placeholder tools
+// (no_tool_available) are skipped when encountered in toolUseEvent.
+func TestHandleKiroToolUseEventPlaceholderFilter(t *testing.T) {
+	state := &kiroSSEState{
+		tools:          make(map[string]*kiroToolBuffer),
+		toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+	}
+
+	payload := map[string]any{
+		"toolUseEvent": []any{
+			map[string]any{
+				"toolUseId": "call_placeholder",
+				"name":      "no_tool_available",
+				"input":     map[string]any{},
+			},
+		},
+	}
+
+	err := handleKiroToolUseEvent(payload, state, 8*1024*1024)
+	if err != nil {
+		t.Fatalf("placeholder should be silently skipped: %v", err)
+	}
+	// tools map should still be empty (placeholder was skipped)
+	if len(state.tools) != 0 {
+		t.Errorf("expected 0 tools after placeholder, got %d", len(state.tools))
+	}
+}
+
+// TestHandleKiroToolUseEventNameReverseMap verifies that truncated tool names
+// are reversed to their original names via the toolNameMap.
+func TestHandleKiroToolUseEventNameReverseMap(t *testing.T) {
+	state := &kiroSSEState{
+		tools:        make(map[string]*kiroToolBuffer),
+		toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		toolNameMap: map[string]string{
+			"truncatedToolName_abc123": "originalVeryLongToolNameForTesting",
+		},
+	}
+
+	payload := map[string]any{
+		"toolUseEvent": []any{
+			map[string]any{
+				"toolUseId": "call_reverse",
+				"name":      "truncatedToolName_abc123",
+				"input":     map[string]any{"key": "value"},
+			},
+		},
+	}
+
+	err := handleKiroToolUseEvent(payload, state, 8*1024*1024)
+	if err != nil {
+		t.Fatalf("call should succeed: %v", err)
+	}
+
+	// The tool should be stored with the ORIGINAL name, not the truncated one
+	tool, exists := state.tools["call_reverse"]
+	if !exists {
+		t.Fatal("tool should be stored in state.tools")
+	}
+	if tool.name != "originalVeryLongToolNameForTesting" {
+		t.Errorf("tool name = %q, want 'originalVeryLongToolNameForTesting'", tool.name)
+	}
+}
+
+// TestHandleKiroToolUseEventToolNameConsistency verifies that tool name changes
+// between fragments for the same toolUseId are rejected.
+func TestHandleKiroToolUseEventToolNameConsistency(t *testing.T) {
+	t.Run("same name ok", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+		// First fragment
+		payload1 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_1",
+					"name":      "readFile",
+					"input":     `{"file": "a"}`,
+				},
+			},
+		}
+		if err := handleKiroToolUseEvent(payload1, state, 8*1024*1024); err != nil {
+			t.Fatalf("first fragment: %v", err)
+		}
+		// Second fragment with same name
+		payload2 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_1",
+					"name":      "readFile",
+					"input":     `{"file": "b"}`,
+				},
+			},
+		}
+		if err := handleKiroToolUseEvent(payload2, state, 8*1024*1024); err != nil {
+			t.Fatalf("second fragment with same name: %v", err)
+		}
+	})
+
+	t.Run("different name rejected", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+		// First fragment: name="readFile"
+		payload1 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_2",
+					"name":      "readFile",
+					"input":     `{}`,
+				},
+			},
+		}
+		if err := handleKiroToolUseEvent(payload1, state, 8*1024*1024); err != nil {
+			t.Fatalf("first fragment: %v", err)
+		}
+		// Second fragment: name="editFile" — should be rejected
+		payload2 := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "call_2",
+					"name":      "editFile",
+					"input":     `{}`,
+				},
+			},
+		}
+		err := handleKiroToolUseEvent(payload2, state, 8*1024*1024)
+		if err == nil {
+			t.Fatal("expected error for name change")
+		}
+		if !strings.Contains(err.Error(), "tool name changed between fragments") {
+			t.Errorf("error = %q, want 'tool name changed between fragments'", err.Error())
+		}
+	})
+}
+
+// TestHandleKiroToolUseEventToolUseIDValidation verifies that invalid toolUseId
+// values (non-string, empty after trim) are rejected.
+func TestHandleKiroToolUseEventToolUseIDValidation(t *testing.T) {
+	t.Run("missing toolUseId auto-generated", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+		payload := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"name":  "testTool",
+					"input": map[string]any{},
+				},
+			},
+		}
+		err := handleKiroToolUseEvent(payload, state, 8*1024*1024)
+		if err != nil {
+			t.Fatalf("missing toolUseId should auto-generate: %v", err)
+		}
+		// Should have 1 tool with auto-generated ID
+		if len(state.tools) != 1 {
+			t.Errorf("expected 1 tool, got %d", len(state.tools))
+		}
+	})
+
+	t.Run("non-string toolUseId rejected", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+		payload := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": 12345, // number, not string
+					"name":      "testTool",
+					"input":     map[string]any{},
+				},
+			},
+		}
+		err := handleKiroToolUseEvent(payload, state, 8*1024*1024)
+		if err == nil {
+			t.Fatal("expected error for non-string toolUseId")
+		}
+		if !strings.Contains(err.Error(), "invalid toolUseId") {
+			t.Errorf("error = %q, want 'invalid toolUseId'", err.Error())
+		}
+	})
+
+	t.Run("empty string toolUseId rejected", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools:          make(map[string]*kiroToolBuffer),
+			toolArgsBuffer: make(map[string]*kiroToolArgBuffer),
+		}
+		payload := map[string]any{
+			"toolUseEvent": []any{
+				map[string]any{
+					"toolUseId": "   ", // whitespace-only
+					"name":      "testTool",
+					"input":     map[string]any{},
+				},
+			},
+		}
+		err := handleKiroToolUseEvent(payload, state, 8*1024*1024)
+		if err == nil {
+			t.Fatal("expected error for whitespace-only toolUseId")
+		}
+	})
+}
+
+// TestFlushKiroBufferedToolArgsToolCallValidation verifies that tool_call
+// wrapper tools with invalid inputs are silently skipped.
+func TestFlushKiroBufferedToolArgsToolCallValidation(t *testing.T) {
+	t.Run("valid tool_call emitted", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools: map[string]*kiroToolBuffer{
+				"call_1": {id: "call_1", name: "tool_call"},
+			},
+			toolArgsBuffer: map[string]*kiroToolArgBuffer{
+				"call_1": {canonical: `{"name":"readFile","arguments":{"path":"/tmp"}}`, isObjectForm: true},
+			},
+		}
+		emitted := false
+		emitDelta := func(delta map[string]any) {
+			if tc, ok := delta["tool_calls"]; ok {
+				if tcArr, ok := tc.([]map[string]any); ok && len(tcArr) > 0 {
+					if fn, ok := tcArr[0]["function"].(map[string]any); ok {
+						if fn["name"] == "tool_call" {
+							emitted = true
+						}
+					}
+				}
+			}
+		}
+		flushKiroBufferedToolArgs(state, emitDelta)
+		if !emitted {
+			t.Error("valid tool_call should be emitted")
+		}
+	})
+
+	t.Run("invalid tool_call skipped", func(t *testing.T) {
+		state := &kiroSSEState{
+			tools: map[string]*kiroToolBuffer{
+				"call_2": {id: "call_2", name: "tool_call"},
+				"call_3": {id: "call_3", name: "readFile"},
+			},
+			toolArgsBuffer: map[string]*kiroToolArgBuffer{
+				"call_2": {canonical: `{"notName":"blah"}`, isObjectForm: true},
+				"call_3": {canonical: `{"path":"/tmp"}`, isObjectForm: true},
+			},
+		}
+		emittedValid := false
+		emittedInvalid := false
+		emitDelta := func(delta map[string]any) {
+			if tc, ok := delta["tool_calls"]; ok {
+				if tcArr, ok := tc.([]map[string]any); ok && len(tcArr) > 0 {
+					if fn, ok := tcArr[0]["function"].(map[string]any); ok {
+						if fn["name"] == "tool_call" {
+							emittedInvalid = true
+						}
+						if fn["name"] == "readFile" {
+							emittedValid = true
+						}
+					}
+				}
+			}
+		}
+		flushKiroBufferedToolArgs(state, emitDelta)
+		if emittedInvalid {
+			t.Error("invalid tool_call should be skipped")
+		}
+		if !emittedValid {
+			t.Error("valid tool (readFile) should still be emitted")
+		}
+	})
 }
 
 func TestSanitizeToolInput(t *testing.T) {
@@ -1080,73 +1399,7 @@ func TestSanitizeToolInput(t *testing.T) {
 	})
 }
 
-func TestIsEmptyMessage(t *testing.T) {
-	t.Run("nil content, no tool calls", func(t *testing.T) {
-		if !isEmptyMessage(Message{Role: "user"}) {
-			t.Error("nil content with no tool calls should be empty")
-		}
-	})
-	t.Run("empty string content", func(t *testing.T) {
-		if !isEmptyMessage(Message{Role: "user", Content: ""}) {
-			t.Error("empty string content should be empty")
-		}
-	})
-	t.Run("whitespace content", func(t *testing.T) {
-		if !isEmptyMessage(Message{Role: "user", Content: "   "}) {
-			t.Error("whitespace content should be empty")
-		}
-	})
-	t.Run("non-empty string", func(t *testing.T) {
-		if isEmptyMessage(Message{Role: "user", Content: "hello"}) {
-			t.Error("non-empty string should not be empty")
-		}
-	})
-	t.Run("empty content array", func(t *testing.T) {
-		if !isEmptyMessage(Message{Role: "user", Content: []any{}}) {
-			t.Error("empty array content should be empty")
-		}
-	})
-	t.Run("content array with text", func(t *testing.T) {
-		if isEmptyMessage(Message{Role: "assistant", Content: []any{
-			map[string]any{"type": "text", "text": "hello"},
-		}}) {
-			t.Error("array with text should not be empty")
-		}
-	})
-	t.Run("content array with empty text only", func(t *testing.T) {
-		if !isEmptyMessage(Message{Role: "assistant", Content: []any{
-			map[string]any{"type": "text", "text": "  "},
-		}}) {
-			t.Error("array with only whitespace text should be empty")
-		}
-	})
-	t.Run("content array with tool_use", func(t *testing.T) {
-		if isEmptyMessage(Message{Role: "assistant", Content: []any{
-			map[string]any{"type": "tool_use", "id": "call_1"},
-		}}) {
-			t.Error("array with tool_use should not be empty")
-		}
-	})
-	t.Run("content array with image", func(t *testing.T) {
-		if isEmptyMessage(Message{Role: "user", Content: []any{
-			map[string]any{"type": "image", "image_url": map[string]any{"url": "data:..."}},
-		}}) {
-			t.Error("array with image should not be empty")
-		}
-	})
-	t.Run("has tool calls field", func(t *testing.T) {
-		if isEmptyMessage(Message{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "call_1"}}}) {
-			t.Error("message with ToolCalls should not be empty")
-		}
-	})
-	t.Run("unknown content type is meaningful", func(t *testing.T) {
-		if isEmptyMessage(Message{Role: "user", Content: []any{
-			map[string]any{"type": "custom_type", "data": "something"},
-		}}) {
-			t.Error("unknown content types should be treated as meaningful")
-		}
-	})
-}
+
 
 func TestConvertEscapedNewlines(t *testing.T) {
 	t.Run("converts backslash-n to newline", func(t *testing.T) {
@@ -1388,6 +1641,145 @@ func TestConvertKiroTools(t *testing.T) {
 	})
 }
 
+// TestBuildKiroRequestFullPipeline verifies buildKiroRequest end-to-end with
+// system messages, tools, tool calls, and tool results.
+func TestBuildKiroRequestFullPipeline(t *testing.T) {
+	req := ChatRequest{
+		Model: "claude-sonnet-4-5",
+		Messages: []Message{
+			{Role: "system", Content: "You are a coding assistant."},
+			{Role: "user", Content: "list files"},
+			{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "executeBash", Arguments: `{"command": "ls"}`}},
+				},
+			},
+			{Role: "tool", Content: "file1.go", ToolCallID: "call_1"},
+			{Role: "assistant", Content: "Found one file."},
+			{Role: "user", Content: "read it"},
+		},
+		Tools: []Tool{
+			{Type: "function", Function: ToolFunction{Name: "executeBash", Description: "Execute a bash command", Parameters: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []any{"command"}}}},
+		},
+	}
+
+	resolved := ResolvedModel{Upstream: "claude-sonnet-4-5"}
+	payload, err := buildKiroRequest(req, resolved, "arn:aws:test:profile/test", "test-conv-id", "")
+	if err != nil {
+		t.Fatalf("buildKiroRequest: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(payload.Body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Check profileArn
+	if parsed["profileArn"] != "arn:aws:test:profile/test" {
+		t.Errorf("profileArn = %q", parsed["profileArn"])
+	}
+
+	// Check conversationState
+	cs, ok := parsed["conversationState"].(map[string]any)
+	if !ok {
+		t.Fatal("conversationState missing")
+	}
+	if cs["conversationId"] != "test-conv-id" {
+		t.Errorf("conversationId = %q", cs["conversationId"])
+	}
+	if cs["chatTriggerType"] != "MANUAL" {
+		t.Errorf("chatTriggerType = %q", cs["chatTriggerType"])
+	}
+
+	// Check currentMessage
+	cm, ok := cs["currentMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage missing")
+	}
+	uim, ok := cm["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatal("userInputMessage missing")
+	}
+
+	// Content should be: system prompt (thinking prefix) + "\n\n" + user content
+	content, _ := uim["content"].(string)
+	if !strings.Contains(content, "read it") {
+		t.Errorf("currentMessage missing user content: %q", content)
+	}
+	// System message should be in <instructions> tags somewhere in history
+
+	// Check history
+	hist, ok := cs["history"].([]any)
+	if !ok {
+		t.Fatal("history missing or not array")
+	}
+
+	// Find system message with <instructions> in history
+	foundInstructions := false
+	foundToolUses := false
+	foundToolResults := false
+	for _, h := range hist {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		uim, ok := hm["userInputMessage"].(map[string]any)
+		if ok {
+			content, _ := uim["content"].(string)
+			if strings.Contains(content, "<instructions>") {
+				foundInstructions = true
+			}
+			ctx, ok := uim["userInputMessageContext"].(map[string]any)
+			if ok {
+				if trArr, ok := ctx["toolResults"].([]any); ok && len(trArr) > 0 {
+					foundToolResults = true
+				}
+			}
+		}
+		arm, ok := hm["assistantResponseMessage"].(map[string]any)
+		if ok {
+			if tuArr, ok := arm["toolUses"].([]any); ok && len(tuArr) > 0 {
+				foundToolUses = true
+			}
+		}
+	}
+
+	if !foundInstructions {
+		t.Error("history should contain <instructions> wrapped system message")
+	}
+	if !foundToolUses {
+		t.Error("history should contain toolUses for call_1")
+	}
+	if !foundToolResults {
+		t.Error("history should contain toolResults for call_1")
+	}
+
+	// Check tools in currentMessage context
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatal("currentMessage missing userInputMessageContext")
+	}
+	tools, ok := ctx["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Error("currentMessage should have tools in context")
+	} else {
+		spec := tools[0].(map[string]any)["toolSpecification"].(map[string]any)
+		if spec["name"] != "executeBash" {
+			t.Errorf("tool name = %q, want executeBash", spec["name"])
+		}
+	}
+
+	// Check modelId and origin
+	if uim["modelId"] != "claude-sonnet-4-5" {
+		t.Errorf("modelId = %q", uim["modelId"])
+	}
+	if uim["origin"] != "AI_EDITOR" {
+		t.Errorf("origin = %q", uim["origin"])
+	}
+}
+
 func TestBuildKiroRequestEmptyConversationID(t *testing.T) {
 	req := ChatRequest{
 		Model:    "claude-sonnet-4-5",
@@ -1596,62 +1988,7 @@ func TestConvertMessagesWithImageOnly(t *testing.T) {
 	}
 }
 
-func TestConvertMessagesImageAgeOut(t *testing.T) {
-	// 7 user messages with images, only last 5 should keep images
-	messages := []Message{
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img1"}}}},
-		{Role: "assistant", Content: "1"},
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img2"}}}},
-		{Role: "assistant", Content: "2"},
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img3"}}}},
-		{Role: "assistant", Content: "3"},
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img4"}}}},
-		{Role: "assistant", Content: "4"},
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img5"}}}},
-		{Role: "assistant", Content: "5"},
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img6"}}}},
-		{Role: "assistant", Content: "6"},
-		{Role: "user", Content: []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,img7"}}}},
-	}
 
-	result := convertMessages(messages, nil, "claude-sonnet-4-5", false)
-
-	// Count user messages with images in history
-	historyWithImages := 0
-	historyWithPlaceholder := 0
-	for _, h := range result.history {
-		uim, ok := h["userInputMessage"].(map[string]any)
-		if !ok {
-			continue
-		}
-		images, hasImages := uim["images"].([]map[string]any)
-		content, _ := uim["content"].(string)
-		if hasImages && len(images) > 0 {
-			historyWithImages++
-		}
-		if strings.Contains(content, "图片") {
-			historyWithPlaceholder++
-		}
-	}
-
-	// 5 history messages should keep images, 2 should be aged out
-	if historyWithImages > 5 {
-		t.Errorf("too many history messages with images: %d (max 5)", historyWithImages)
-	}
-	if historyWithPlaceholder == 0 && len(result.history) > 5 {
-		t.Error("expected some history messages to have image placeholder")
-	}
-
-	// currentMessage should always keep images
-	if result.currentMessage != nil {
-		uim, ok := result.currentMessage["userInputMessage"].(map[string]any)
-		if ok {
-			if images, hasImages := uim["images"].([]map[string]any); hasImages && len(images) > 0 {
-				t.Logf("currentMessage has %d images (expected)", len(images))
-			}
-		}
-	}
-}
 
 func TestConvertMessagesImageSupportsFalse(t *testing.T) {
 	// Non-Claude model: images should be skipped, text preserved
@@ -1688,5 +2025,120 @@ func TestConvertMessagesImageSupportsFalse(t *testing.T) {
 				// OK - text preserved, images filtered
 			}
 		}
+	}
+}
+
+// TestIsShortFutureAction verifies the regex-based short future action detection.
+// VansRouter ref: kiro.js isShortFutureAction
+func TestIsShortFutureAction(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		// English future action patterns (short, no result evidence)
+		{"english verify short", "I'll verify the status", true},
+		{"english check short", "Now I will check the deployment", true},
+		{"english confirm short", "Let me confirm the checksum", true},
+		{"english investigate short", "Next, I need to investigate the error", true},
+		{"english trace short", "Then let me trace the request", true},
+		{"english follow up short", "I am going to follow up on this", true},
+		{"english test short", "i will test the endpoint", true},
+		{"english validate short", "let me validate the response", true},
+		{"english continue short", "I'll continue with the analysis", true},
+
+		// Chinese future action patterns
+		{"chinese 補 short", "我將補查一下", true},
+		{"chinese 確認 short", "我將確認結果", true},
+		{"chinese 驗證 short", "我將驗證看看", true},
+		{"chinese 檢查 short", "現在我檢查配置", true},
+		{"chinese 測試 short", "下一步我測試看看", true},
+		{"chinese 追蹤 short", "我只再追這個問題", true},
+		{"chinese 繼續 short", "我將繼續調查", true},
+
+		// Already has result evidence → not future action
+		{"has result evidence found", "I'll verify the status. Found the issue: timeout", false},
+		{"has result evidence succeeded", "Now let me check. The test succeeded", false},
+		{"chinese has result 發現", "我來檢查一下。發現錯誤在 config 中", false},
+		{"chinese has result 成功", "我將確認部署是否成功", false},
+
+		// Already completed → not future action
+		{"completed done", "I'll check. Done", false},
+		{"completed fixed", "Now let me verify. Fixed", false},
+		{"chinese completed 完成", "我來檢查。已完成驗證", false},
+		{"chinese completed 總結", "我將測試。總結：一切正常", false},
+
+		// Waiting for user → not future action
+		{"user wait please", "Please approve this change", false},
+		{"user wait after you", "I'll check after you provide the file", false},
+		{"chinese user wait 請你", "請你確認一下", false},
+		{"chinese user wait 等待", "等待使用者提供資料", false},
+
+		// Empty or no-op → not future action
+		{"empty string", "", false},
+		{"whitespace only", "   ", false},
+		{"no future action plain text", "The answer is 42.", false},
+		{"no future action greeting", "Hello, how can I help?", false},
+
+		// Regular content with result → not future action
+		{"has result with colons", "I'll verify: status is ok", false},
+		{"has result with status", "Let me check. Status: deployed successfully", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isShortFutureAction(tt.text)
+			if got != tt.want {
+				t.Errorf("isShortFutureAction(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsShortFutureActionObservedPattern verifies the specific observed trailing future action pattern.
+func TestIsShortFutureActionObservedPattern(t *testing.T) {
+	text := "目前證據顯示訪問日誌中有多次504錯誤。最後補查 504 access log，確認 host/路徑與是否為集中流量。"
+	if !isShortFutureAction(text) {
+		t.Error("observed trailing future action pattern should match")
+	}
+}
+
+// TestIsShortFutureActionEnglishFutureWithResult verifies English future actions with result clauses.
+func TestIsShortFutureActionEnglishFutureWithResult(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"with status is", "I'll verify the status is healthy"},
+		{"with checksum matches", "Now let me check the checksum matches the expected value"},
+		{"with response was", "Let me confirm the response was successful"},
+		{"with deployment returned", "I need to investigate the deployment returned an error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if isShortFutureAction(tt.text) {
+				t.Errorf("should NOT be future action: %q", tt.text)
+			}
+		})
+	}
+}
+
+// TestIsShortFutureActionChineseFutureWithResult verifies Chinese future actions with result clauses.
+func TestIsShortFutureActionChineseFutureWithResult(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"with 版本是", "我來檢查版本是 2.0"},
+		{"with 回應為", "我將確認回應為成功"},
+		{"with 結果顯示", "我來檢查結果顯示正常"},
+		{"with 狀態為", "我將驗證狀態為 healthy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if isShortFutureAction(tt.text) {
+				t.Errorf("should NOT be future action: %q", tt.text)
+			}
+		})
 	}
 }

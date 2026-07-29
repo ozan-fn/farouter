@@ -1,16 +1,35 @@
 package kiro
 
+// VansRouter equivalents:
+//   writeStreamError → open-sse/executors/kiro.js encodeSSEError()
+//   buildErrorBody   → open-sse/config/runtimeConfig.js HTTP_STATUS / errorConfig.js
+//   errorTypes       → open-sse/config/runtimeConfig.js HTTP_STATUS mapping
+//
+// formatProviderError — Go-specific error formatting for provider errors
+// No direct VansRouter equivalent (provider error format is router-specific)
+
 import (
 	"encoding/json"
 	"fmt"
 	"io"
 )
 
+// formatProviderError — Go-specific error formatting for provider errors
+// No direct VansRouter equivalent (provider error format is router-specific)
+func formatProviderError(err error, provider string, endpoint string, status int) string {
+	msg := fmt.Sprintf("%s://%s: %d", provider, endpoint, status)
+	if err != nil {
+		msg += " — " + err.Error()
+	}
+	return msg
+}
+
 type errorInfo struct {
 	Type string
 	Code string
 }
 
+// HTTP status → error type mapping. VansRouter: runtimeConfig.js HTTP_STATUS
 var errorTypes = map[int]errorInfo{
 	400: {"invalid_request_error", "bad_request"},
 	401: {"authentication_error", "invalid_api_key"},
@@ -25,6 +44,7 @@ var errorTypes = map[int]errorInfo{
 	504: {"server_error", "gateway_timeout"},
 }
 
+// VansRouter: errorConfig.js DEFAULT_ERROR_MESSAGES
 var defaultErrorMessages = map[int]string{
 	400: "Bad request",
 	401: "Invalid API key provided",
@@ -39,6 +59,7 @@ var defaultErrorMessages = map[int]string{
 	504: "Gateway timeout",
 }
 
+// buildErrorBody — VansRouter: encodeSSEError() pattern
 func buildErrorBody(status int, message string) map[string]any {
 	info := errorTypes[status]
 	if info.Type == "" {
@@ -64,35 +85,9 @@ func buildErrorBody(status int, message string) map[string]any {
 	}
 }
 
-func errorResponse(status int, message string) (int, map[string]any) {
-	return status, buildErrorBody(status, message)
-}
-
+// writeStreamError — VansRouter: encodeSSEError()
 func writeStreamError(w io.Writer, status int, message string) {
 	body := buildErrorBody(status, message)
 	b, _ := json.Marshal(body)
 	fmt.Fprintf(w, "data: %s\n\n", b)
-}
-
-func formatProviderError(err error, provider, model string, statusCode int) string {
-	code := statusCode
-	if code == 0 {
-		if c, ok := err.(interface{ Code() string }); ok {
-			return fmt.Sprintf("[%s]: %s", c.Code(), err.Error())
-		}
-		code = 502
-	}
-	msg := err.Error()
-	if msg == "" {
-		msg = "Unknown error"
-	}
-	var causeStr string
-	type causer interface{ Cause() error }
-	if c, ok := err.(causer); ok {
-		cause := c.Cause()
-		if cause != nil {
-			causeStr = fmt.Sprintf(" (cause: %s)", cause.Error())
-		}
-	}
-	return fmt.Sprintf("[%d]: %s%s", code, msg, causeStr)
 }

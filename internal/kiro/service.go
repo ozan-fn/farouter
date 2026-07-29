@@ -1,9 +1,12 @@
 package kiro
 
+// VansRouter equivalents:
+//   RefreshCredentials → open-sse/executors/kiro.js refreshCredentials()
+//   validateExternalIdpTokenEndpoint → open-sse/services/kiroExternalIdp.ts
+//   BuildAndExecuteRequest → open-sse/executors/kiro.js execute() + base.js execute()
+
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,12 +15,9 @@ import (
 	"strings"
 )
 
-// ── Credential refresh orchestration (OmniRoute KiroExecutor.refreshCredentials) ──
-
-// RefreshCredentials orchestrates a Kiro credential refresh. It handles
-// the three auth methods: AWS SSO OIDC, social login, and External IdP.
-// For External IdP and IdC accounts it also discovers the profile ARN
-// when not already set. Returns nil when no refresh is possible.
+// RefreshCredentials — VansRouter: kiro.js refreshCredentials()
+// Orchestrates Kiro credential refresh. Delegates token dispatch to token.go RefreshToken.
+// Uses token.go's RefreshToken dispatch (AWS SSO OIDC, social, External IdP).
 func RefreshCredentials(ctx context.Context, creds Credentials) (*Credentials, error) {
 	if creds.PSD.AuthMethod == "api_key" {
 		return nil, nil
@@ -26,7 +26,7 @@ func RefreshCredentials(ctx context.Context, creds Credentials) (*Credentials, e
 		return nil, nil
 	}
 
-	result, err := doTokenRefresh(ctx, creds)
+	result, err := RefreshToken(ctx, creds.RefreshToken, creds.PSD)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh: %w", err)
 	}
@@ -52,56 +52,7 @@ func RefreshCredentials(ctx context.Context, creds Credentials) (*Credentials, e
 	return newCreds, nil
 }
 
-// doTokenRefresh dispatches to the correct refresh flow based on auth method.
-func doTokenRefresh(ctx context.Context, creds Credentials) (*TokenResult, error) {
-	if isExternalIdpAuthMethod(creds.PSD.AuthMethod) {
-		return refreshExternalIdpToken(ctx, creds.RefreshToken, creds.PSD)
-	}
-
-	if creds.PSD.ClientID != "" && creds.PSD.ClientSecret != "" {
-		return refreshAWSSSOToken(ctx, creds.RefreshToken, creds.PSD)
-	}
-
-	return refreshSocialToken(ctx, creds.RefreshToken)
-}
-
-func refreshAWSSSOToken(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
-	region := psd.Region
-	if region == "" {
-		region = "us-east-1"
-	}
-	endpoint := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", region)
-
-	payload, _ := json.Marshal(map[string]string{
-		"clientId":     psd.ClientID,
-		"clientSecret": psd.ClientSecret,
-		"refreshToken": refreshToken,
-		"grantType":    "refresh_token",
-	})
-
-	result, err := doPostTokenRefresh(ctx, endpoint, payload, "application/json")
-	if err != nil {
-		return nil, err
-	}
-
-	if result.ProfileArn == "" && psd.ProfileArn != "" {
-		result.ProfileArn = psd.ProfileArn
-	}
-	return result, nil
-}
-
-func refreshSocialToken(ctx context.Context, refreshToken string) (*TokenResult, error) {
-	payload, _ := json.Marshal(map[string]string{
-		"refreshToken": refreshToken,
-	})
-
-	result, err := doPostTokenRefresh(ctx, socialAuthService+"/refreshToken", payload, "application/json")
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
+// VansRouter: kiro.js refreshCredentials() — External IdP token refresh
 func refreshExternalIdpToken(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
 	tokenEndpoint := psd.TokenEndpoint
 	if tokenEndpoint == "" {
@@ -171,39 +122,7 @@ func refreshExternalIdpToken(ctx context.Context, refreshToken string, psd Provi
 	return result, nil
 }
 
-func doPostTokenRefresh(ctx context.Context, endpoint string, payload []byte, contentType string) (*TokenResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", contentType)
-
-	resp, err := getHttpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh %s: HTTP %d: %s", endpoint, resp.StatusCode, string(body))
-	}
-
-	var result TokenResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// ── External IdP helpers (OmniRoute kiroExternalIdp.ts) ────────────────────
-
-// validateExternalIdpTokenEndpoint validates an External IdP token endpoint URL.
-// Requires HTTPS and a host on the allowed IdP suffix list.
+// validateExternalIdpTokenEndpoint — VansRouter: kiroExternalIdp.ts validateEndpoint
 func validateExternalIdpTokenEndpoint(rawEndpoint string) error {
 	endpoint := strings.TrimSpace(rawEndpoint)
 	if endpoint == "" {
@@ -237,6 +156,7 @@ func validateExternalIdpTokenEndpoint(rawEndpoint string) error {
 	return nil
 }
 
+// allowedIdpHostSuffixes — VansRouter: kiroExternalIdp.ts allowed host list
 var allowedIdpHostSuffixes = []string{
 	"login.microsoftonline.com",
 	"login.microsoftonline.us",
@@ -256,53 +176,7 @@ var allowedIdpHostSuffixes = []string{
 	".amazoncognito.com",
 }
 
-// decodeJwtPayload performs a best-effort base64url JWT payload decode
-// without signature verification.
-func decodeJwtPayload(jwt string) map[string]any {
-	parts := strings.Split(jwt, ".")
-	if len(parts) != 3 {
-		return nil
-	}
-	payload := parts[1]
-	payload = strings.ReplaceAll(payload, "-", "+")
-	payload = strings.ReplaceAll(payload, "_", "/")
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
-	}
-	decoded, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return nil
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(decoded, &claims); err != nil {
-		return nil
-	}
-	return claims
-}
-
-// emailFromExternalIdpToken extracts the login identity from an External IdP
-// access token JWT. Checks preferred_username, upn, email claims.
-func emailFromExternalIdpToken(accessToken string) string {
-	claims := decodeJwtPayload(accessToken)
-	if claims == nil {
-		return ""
-	}
-	for _, key := range []string{"email", "preferred_username", "upn"} {
-		if v, ok := claims[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// ── Request builder with context ───────────────────────────────────────────
-
-// BuildAndExecuteRequest is the top-level orchestration for a Kiro request.
-// It handles credential refresh, profile ARN discovery, payload building,
-// and upstream call with failover. Returns the upstream response on success.
+// BuildAndExecuteRequest — VansRouter: kiro.js execute() + profile resolution
 func BuildAndExecuteRequest(ctx context.Context, creds Credentials, body []byte) (*http.Response, error) {
 	if creds.ProfileArn == "" && creds.PSD.ProfileArn != "" {
 		creds.ProfileArn = creds.PSD.ProfileArn

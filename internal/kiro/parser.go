@@ -1,5 +1,14 @@
 package kiro
 
+// VansRouter equivalents:
+//   ParseEventStream  → open-sse/executors/kiro.js processBytes() + readFrame
+//   parseHeaders      → open-sse/executors/kiro.js parseEventFrame() header parsing
+//   readFrame         → open-sse/executors/kiro.js parseEventFrame()
+//
+// Binary AWS EventStream parser — shared format between Go and JS.
+// Go implementation uses io.Reader, JS uses Uint8Array + DataView.
+// Both validate CRC32, parse header types 0-9, and return Event{Headers, Payload}.
+
 import (
 	"encoding/binary"
 	"encoding/json"
@@ -8,6 +17,8 @@ import (
 	"io"
 )
 
+// ParseEventStream reads binary AWS EventStream frames and calls fn for each.
+// VansRouter: kiro.js processBytes() loop
 func ParseEventStream(r io.Reader, fn func(Event) error) error {
 	for {
 		event, err := readFrame(r)
@@ -23,6 +34,8 @@ func ParseEventStream(r io.Reader, fn func(Event) error) error {
 	}
 }
 
+// readFrame reads one AWS EventStream frame.
+// VansRouter: kiro.js parseEventFrame()
 func readFrame(r io.Reader) (Event, error) {
 	prelude := make([]byte, 12)
 	if _, err := io.ReadFull(r, prelude); err != nil {
@@ -65,6 +78,9 @@ func readFrame(r io.Reader) (Event, error) {
 	return Event{Headers: headers, Payload: payload}, nil
 }
 
+// parseHeaders parses AWS EventStream headers (types 0-9).
+// VansRouter: kiro.js parseEventFrame() header switch
+// Both handle: TRUE/FALSE (0/1), int8(2), int16(3), int32(4), byte[]/string(6/7), uuid(9)
 func parseHeaders(data []byte) map[string]string {
 	headers := make(map[string]string)
 	i := 0

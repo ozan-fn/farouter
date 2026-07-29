@@ -1,5 +1,13 @@
 package kiro
 
+// VansRouter equivalents:
+//   SSE_DONE          → open-sse/utils/sseConstants.js SSE_DONE
+//   SSEHeadersCORS    → open-sse/utils/sseConstants.js SSE_HEADERS_CORS
+//   createPassthroughTransform → open-sse/utils/sse.js sseChunk + passthrough logic
+//   fixInvalidID      → open-sse/executors/kiro.js inline in transformEventStreamToSSE
+//   hasValuableContent → open-sse/executors/kiro.js inline delta check
+//   Usage helpers     → open-sse/executors/kiro.js finish() inline
+
 import (
 	"bufio"
 	"encoding/json"
@@ -11,6 +19,7 @@ import (
 	"time"
 )
 
+// SSE headers — VansRouter: sseConstants.js SSE_DONE / SSE_HEADERS_CORS
 const SSEDone = "data: [DONE]\n\n"
 
 var SSEHeadersCORS = map[string]string{
@@ -20,19 +29,23 @@ var SSEHeadersCORS = map[string]string{
 	"Access-Control-Allow-Origin": "*",
 }
 
+// ssePassthroughState tracks accumulated content/usage during SSE passthrough.
+// VansRouter equivalent: state in transformEventStreamToSSE (kiro.js) + inline in finish()
 type ssePassthroughState struct {
-	usage                map[string]any
-	totalContentLength   int
-	accumulatedContent   string
-	accumulatedThinking  string
-	ttftAt               time.Time
-	sseLineCount         int64
-	streamDoneSent       atomic.Bool
-	responseID           string
-	created              int64
-	model                string
+	usage               map[string]any
+	totalContentLength  int
+	accumulatedContent  string
+	accumulatedThinking string
+	ttftAt              time.Time
+	sseLineCount        int64
+	streamDoneSent      atomic.Bool
+	responseID          string
+	created             int64
+	model               string
 }
 
+// ParseSSELine parses a single SSE "data:" line.
+// VansRouter: inline in sse.js (JSON.parse after "data: " prefix)
 func ParseSSELine(line string) (map[string]any, bool) {
 	if line == "" {
 		return nil, false
@@ -51,6 +64,8 @@ func ParseSSELine(line string) (map[string]any, bool) {
 	return parsed, false
 }
 
+// hasValuableContent checks if an SSE chunk contains actual content worth emitting.
+// VansRouter: inline delta check in kiro.js (content/reasoning/tool_calls/finish_reason)
 func hasValuableContent(chunk map[string]any) bool {
 	choices, _ := chunk["choices"].([]any)
 	if len(choices) == 0 {
@@ -70,6 +85,9 @@ func hasValuableContent(chunk map[string]any) bool {
 	return (content != "") || (reasoning != "") || (len(toolCalls) > 0) || (finishReason != "") || (role != "")
 }
 
+// fixInvalidID replaces invalid upstream IDs ("chat", "completion") with a fresh chatcmpl- ID.
+// VansRouter: inline in kiro.js transformEventStreamToSSE:
+//   const responseId = `chatcmpl-${Date.now()}`
 func fixInvalidID(parsed map[string]any) (fixed bool, upstreamID string) {
 	id, _ := parsed["id"].(string)
 	if id != "" && id != "chat" && id != "completion" && len(id) >= 8 {
@@ -80,6 +98,8 @@ func fixInvalidID(parsed map[string]any) (fixed bool, upstreamID string) {
 	return true, newID
 }
 
+// formatSSE marshals a data object to SSE "data: <json>\n\n" format.
+// VansRouter: sse.js sseChunk(data) → `data: ${JSON.stringify(data)}\n\n`
 func formatSSE(data map[string]any) string {
 	if data == nil {
 		return "data: null\n\n"
@@ -89,6 +109,7 @@ func formatSSE(data map[string]any) string {
 	return fmt.Sprintf("data: %s\n\n", b)
 }
 
+// cleanUsagePayload removes nil usage fields (VansRouter: inline).
 func cleanUsagePayload(data map[string]any) map[string]any {
 	if data == nil {
 		return nil
@@ -105,6 +126,10 @@ func cleanUsagePayload(data map[string]any) map[string]any {
 	return data
 }
 
+// createPassthroughTransform wraps an io.Reader to produce clean SSE output.
+// Handles: ID fix, object/created defaults, filter_results removal, empty tool_calls cleanup,
+// content/thinking tracking, usage extraction/estimation, [DONE] sentinel.
+// VansRouter: passthrough in sse.js + finish() cleanup in kiro.js
 func createPassthroughTransform(r io.Reader, sc *StreamController, model string) io.Reader {
 	pr, pw := io.Pipe()
 	state := &ssePassthroughState{
@@ -151,7 +176,6 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 
 			fixed, upstreamID := fixInvalidID(parsed)
 			if !fixed && state.responseID == "" {
-				// First valid upstream ID → preserve it (AIClient2API style)
 				state.responseID = upstreamID
 			}
 			if state.responseID != "" {
@@ -171,6 +195,7 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 					if choice == nil {
 						continue
 					}
+					// VansRouter: strip Azure content filter results
 					delete(choice, "prompt_filter_results")
 					delete(choice, "content_filter_results")
 
@@ -259,6 +284,8 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 	return pr
 }
 
+// VansRouter: usage extraction inlined in kiro.js finish()
+
 func hasValidUsage(data map[string]any) bool {
 	usage, _ := data["usage"].(map[string]any)
 	return hasValidUsageRaw(usage)
@@ -305,6 +332,7 @@ func extractUsageFromChunk(chunk map[string]any) map[string]any {
 	return u
 }
 
+// mergeUsage combines two usage maps (VansRouter: inline in finish()).
 func mergeUsage(a, b map[string]any) map[string]any {
 	if a == nil {
 		return b
@@ -328,6 +356,7 @@ func mergeUsage(a, b map[string]any) map[string]any {
 	return r
 }
 
+// estimateUsage estimates token usage from content length (VansRouter: kiro.js finish()).
 func estimateUsage(contentLength int) map[string]any {
 	prompt := 0
 	completion := contentLength / 4
@@ -341,6 +370,7 @@ func estimateUsage(contentLength int) map[string]any {
 	}
 }
 
+// filterUsage filters usage to only standard token fields (Go-specific helper).
 func filterUsage(usage map[string]any) map[string]any {
 	if usage == nil {
 		return nil

@@ -1,36 +1,41 @@
 package kiro
 
+// VansRouter equivalents:
+//   GetKiroServiceHeaders  → open-sse/config/appConstants.js + kiro.js buildHeaders()
+//   KnownModels            → open-sse/config/providerModels.js + capabilities.js
+//   GetOrderedBaseURLs     → open-sse/executors/kiro.js getOrderedBaseUrls()
+//   ResolveRuntimeRegion   → open-sse/config/kiroRegion.ts
+//   NormalizeEffort        → open-sse/config/kiroConstants.js extractKiroEffortLevel()
+//   ThinkingLengthForEffort → open-sse/config/kiroConstants.js effortToBudget()
+//   RegionFromProfileArn   → open-sse/config/kiroRegion.ts
+
 import "strings"
 
-// ── Kiro service headers (OmniRoute getKiroServiceHeaders) ─────────────────
-
+// GetKiroServiceHeaders — VansRouter: appConstants.js + kiro.js buildHeaders()
 const (
-	KIRO_STREAMING_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
-	KIRO_VERSION          = "0.11.107"
-	KIRO_SDK_USER_AGENT   = "AWS-SDK-JS/3.0.0 KiroIDE-" + KIRO_VERSION
-	KIRO_AMZ_USER_AGENT   = "aws-sdk-js/3.0.0 KiroIDE-" + KIRO_VERSION
-
-	KIRO_EXTERNAL_IDP_AUTH_METHOD      = "external_idp"
+	KIRO_STREAMING_TARGET           = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+	KIRO_VERSION                    = "0.11.107"
+	KIRO_SDK_USER_AGENT             = "AWS-SDK-JS/3.0.0 KiroIDE-" + KIRO_VERSION
+	KIRO_AMZ_USER_AGENT             = "aws-sdk-js/3.0.0 KiroIDE-" + KIRO_VERSION
+	KIRO_EXTERNAL_IDP_AUTH_METHOD   = "external_idp"
 	KIRO_EXTERNAL_IDP_TOKEN_TYPE_HEADER = "TokenType"
 	KIRO_EXTERNAL_IDP_TOKEN_TYPE_VALUE  = "EXTERNAL_IDP"
 )
 
-// GetKiroServiceHeaders returns the standard headers for the Kiro streaming API.
-// Matches AIClient2API claude-kiro.js buildHeaders: x-amzn-codewhisperer-optout, x-amzn-kiro-agent-mode.
+// GetKiroServiceHeaders — VansRouter: kiro.js buildHeaders() headers base
 func GetKiroServiceHeaders() map[string]string {
 	return map[string]string{
-		"Content-Type":              "application/json",
-		"Accept":                    "application/vnd.amazon.eventstream",
-		"X-Amz-Target":              KIRO_STREAMING_TARGET,
-		"User-Agent":                KIRO_SDK_USER_AGENT,
-		"X-Amz-User-Agent":          KIRO_AMZ_USER_AGENT,
+		"Content-Type":                "application/json",
+		"Accept":                      "application/vnd.amazon.eventstream",
+		"X-Amz-Target":                KIRO_STREAMING_TARGET,
+		"User-Agent":                  KIRO_SDK_USER_AGENT,
+		"X-Amz-User-Agent":            KIRO_AMZ_USER_AGENT,
 		"x-amzn-codewhisperer-optout": "true",
-		"x-amzn-kiro-agent-mode":    "vibe",
+		"x-amzn-kiro-agent-mode":      "vibe",
 	}
 }
 
-// ── Model catalog (OmniRoute kiroProvider.models) ──────────────────────────
-
+// KnownModels — VansRouter: capabilities.js + providerModels.js
 var KnownModels = []KiroModel{
 	{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", ContextLength: 1000000, MaxOutputTokens: 128000},
 	{ID: "claude-opus-5", Name: "Claude Opus 5", ContextLength: 1000000, MaxOutputTokens: 128000},
@@ -54,7 +59,7 @@ var KnownModels = []KiroModel{
 	{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", ContextLength: 1000000, MaxOutputTokens: 128000},
 }
 
-// IsKnownModel returns true if the model ID is in the Kiro upstream catalog.
+// IsKnownModel — VansRouter: providerModels.js lookup
 func IsKnownModel(id string) bool {
 	for _, m := range KnownModels {
 		if m.ID == id {
@@ -64,16 +69,7 @@ func IsKnownModel(id string) bool {
 	return false
 }
 
-// ── Adaptive thinking allowlist (OmniRoute adaptiveThinking.ts) ────────────
-
-// ── Thinking effort levels (OmniRoute openai-to-kiro.ts) ───────────────────
-
-var kiroEffortLevels = map[string]bool{
-	"low": true, "medium": true, "high": true, "xhigh": true, "max": true,
-}
-
-// NormalizeEffort maps an OpenAI/Anthropic reasoning effort string to a Kiro
-// effort level, or "" when no reasoning was requested.
+// NormalizeEffort — VansRouter: kiroConstants.js extractKiroEffortLevel()
 func NormalizeEffort(raw string) string {
 	switch strings.ToLower(raw) {
 	case "none", "off", "disabled", "":
@@ -86,8 +82,7 @@ func NormalizeEffort(raw string) string {
 	return ""
 }
 
-// ThinkingLengthForEffort returns a soft <max_thinking_length> budget per effort level.
-// Clamped to 32000 per Kiro upstream maximum.
+// ThinkingLengthForEffort — VansRouter: kiroConstants.js effortToBudget()
 func ThinkingLengthForEffort(effort string) int {
 	switch effort {
 	case "max", "xhigh", "high":
@@ -99,11 +94,10 @@ func ThinkingLengthForEffort(effort string) int {
 	}
 }
 
-// ── Region resolution (OmniRoute kiroRegion.ts) ────────────────────────────
-
+// KIRO_PROFILE_REGIONS — VansRouter: kiroRegion.ts regions
 var KIRO_PROFILE_REGIONS = []string{"us-east-1", "eu-central-1"}
 
-// KiroRuntimeHost returns the CodeWhisperer/Amazon Q runtime host for a region.
+// KiroRuntimeHost — VansRouter: kiroRegion.ts runtimeHost()
 func KiroRuntimeHost(region string) string {
 	if region == "us-east-1" {
 		return "https://codewhisperer.us-east-1.amazonaws.com"
@@ -111,7 +105,7 @@ func KiroRuntimeHost(region string) string {
 	return "https://q." + region + ".amazonaws.com"
 }
 
-// RegionFromProfileArn extracts the region from a Kiro profile ARN.
+// RegionFromProfileArn — VansRouter: kiroRegion.ts regionFromProfileArn()
 func RegionFromProfileArn(profileArn string) string {
 	if profileArn == "" {
 		return ""
@@ -129,14 +123,12 @@ func RegionFromProfileArn(profileArn string) string {
 	return rest[:idx]
 }
 
-// isExternalIdpAuthMethod reports whether the auth method is External IdP (enterprise SSO).
+// isExternalIdpAuthMethod — VansRouter: auth method check
 func isExternalIdpAuthMethod(authMethod string) bool {
 	return strings.ToLower(strings.TrimSpace(authMethod)) == KIRO_EXTERNAL_IDP_AUTH_METHOD
 }
 
-// GetOrderedBaseURLs returns the fallback chain of Kiro endpoints.
-// Auth-method routing: api_key/external_idp/idc → amazonaws.com first (kiro.dev rejects these tokens).
-// Region substitution: replace us-east-1 with token region in amazonaws.com URLs.
+// GetOrderedBaseURLs — VansRouter: kiro.js getOrderedBaseUrls()
 func GetOrderedBaseURLs(creds Credentials, region string) []string {
 	authMethod := creds.PSD.AuthMethod
 	isCodeWhispererSurface := authMethod == "api_key" || authMethod == "external_idp" || authMethod == "idc"
@@ -158,8 +150,7 @@ func GetOrderedBaseURLs(creds Credentials, region string) []string {
 	return urls
 }
 
-// ResolveRuntimeRegion resolves the runtime region for Kiro API calls.
-// Priority: profileArn region > stored region (if valid profile region) > us-east-1.
+// ResolveRuntimeRegion — VansRouter: kiroRegion.ts resolveRuntimeRegion()
 func ResolveRuntimeRegion(storedRegion, profileArn string) string {
 	if fromArn := RegionFromProfileArn(profileArn); fromArn != "" {
 		return fromArn

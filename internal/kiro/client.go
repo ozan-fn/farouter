@@ -1,11 +1,18 @@
 package kiro
 
+// VansRouter equivalents:
+//   BuildKiroHeaders   → open-sse/executors/kiro.js buildHeaders()
+//   sendToKiroCtx      → open-sse/executors/kiro.js execute() + base.js execute()
+//   getOrderedBaseUrls → open-sse/executors/kiro.js getOrderedBaseUrls()
+//   DiscoverProfileArn → open-sse/services/discoverProfileArn (kiro external service)
+
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -14,13 +21,19 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	requestTimeout    = 120 * time.Second
-	defaultHTTPTimeout = 60 * time.Second
-)
-
+// httpClient dengan connect-only timeout via DialContext + TLSHandshakeTimeout.
+// VansRouter pattern: FETCH_CONNECT_TIMEOUT_MS hanya untuk connection phase,
+// tidak untuk stream. http.Client.Timeout TIDAK dipakai karena membunuh body read.
+// Stream timeout di-handle oleh PipeWithDisconnect (TTFT 200s + stall 360s).
+// Non-streaming request (quota, token) punya context.WithTimeout sendiri.
 var httpClient = &http.Client{
-	Timeout: requestTimeout,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   FetchConnectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: FetchConnectTimeout,
+	},
 }
 
 func SetHTTPClient(client *http.Client) {
@@ -33,30 +46,15 @@ func getHttpClient() *http.Client {
 	return httpClient
 }
 
-// ── Context-aware HTTP execution ───────────────────────────────────────────
-
-func doRequestCtx(ctx context.Context, req *http.Request) (*http.Response, error) {
-	resp, err := getHttpClient().Do(req.WithContext(ctx))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("kiro upstream %s: %s", resp.Status, string(body))
-	}
-	return resp, nil
-}
+// VansRouter: Go-specific infrastructure (HTTP exec helpers)
 
 func doRequestRawCtx(ctx context.Context, req *http.Request) (*http.Response, error) {
 	return getHttpClient().Do(req.WithContext(ctx))
 }
 
-// ── Full Kiro header builder (OmniRoute KiroExecutor.buildHeaders) ─────────
-
-// BuildKiroHeaders constructs the full request headers for a Kiro
-// generateAssistantResponse call. It handles auth-method-specific headers
-// (API_KEY vs External IdP vs OAuth), SDK identity headers, and cache control.
+// BuildKiroHeaders — VansRouter: kiro.js buildHeaders()
+// Constructs full request headers for Kiro generateAssistantResponse call.
+// Handles auth-method-specific headers (API_KEY vs External IdP vs OAuth).
 func BuildKiroHeaders(creds Credentials) map[string]string {
 	headers := GetKiroServiceHeaders()
 	headers["Amz-Sdk-Request"] = "attempt=1; max=3"
@@ -82,7 +80,7 @@ func BuildKiroHeaders(creds Credentials) map[string]string {
 	return headers
 }
 
-// BuildStreamingHeaders returns legacy-style headers for the streaming endpoint.
+// BuildStreamingHeaders — VansRouter legacy pattern (kiro.js inline)
 func BuildStreamingHeaders(creds Credentials, host string) map[string]string {
 	headers := map[string]string{
 		"User-Agent":       "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#22.22.0 api/codewhispererstreaming#3.0.0 m/E KiroIDE-" + KIRO_VERSION,
@@ -94,47 +92,16 @@ func BuildStreamingHeaders(creds Credentials, host string) map[string]string {
 	return headers
 }
 
-// ── Auth header helpers ────────────────────────────────────────────────────
-
-// setAuthHeaders applies auth-specific headers to a request based on the
-// credentials' auth method (API_KEY, external_idp, or default OAuth).
-func setAuthHeaders(req *http.Request, creds Credentials) {
-	token := creds.AccessToken
-	if creds.PSD.AuthMethod == "api_key" && creds.AccessToken != "" {
-		token = creds.AccessToken
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	switch {
-	case creds.PSD.AuthMethod == "api_key":
-		req.Header.Set("tokentype", "API_KEY")
-	case isExternalIdpAuthMethod(creds.PSD.AuthMethod):
-		req.Header.Set(KIRO_EXTERNAL_IDP_TOKEN_TYPE_HEADER, KIRO_EXTERNAL_IDP_TOKEN_TYPE_VALUE)
-	}
-}
-
-// ── Core request sending with failover (backward-compatible) ───────────────
-
-func sendToKiro(creds Credentials, body []byte) (*http.Response, error) {
-	return sendToKiroCtx(context.Background(), creds, body)
-}
-
-// regionalizeURL replaces the region in an amazonaws.com URL
-// e.g., "https://codewhisperer.us-east-1.amazonaws.com" + "eu-central-1"
-//    → "https://codewhisperer.eu-central-1.amazonaws.com"
+// regionalizeURL — VansRouter: kiro.js getOrderedBaseUrls() inline regionalize lambda
 func regionalizeURL(url, region string) string {
 	if region == "" || region == "us-east-1" || !strings.Contains(url, "amazonaws.com") {
 		return url
 	}
-	// Pattern: {service}.{region}.amazonaws.com → {service}.{newRegion}.amazonaws.com
 	re := regexp.MustCompile(`([a-z]+)\.[a-z0-9-]+\.amazonaws\.com`)
 	return re.ReplaceAllString(url, fmt.Sprintf("$1.%s.amazonaws.com", region))
 }
 
-// sendToKiroCtx sends the given body to the Kiro generateAssistantResponse
-// endpoint with endpoint failover. It tries amazonaws.com endpoints first
-// for CodeWhisperer-surface auth methods, then falls back to kiro.dev.
+// sendToKiroCtx — VansRouter: kiro.js execute() + base.js execute() URL fallback loop
 func sendToKiroCtx(ctx context.Context, creds Credentials, body []byte) (*http.Response, error) {
 	urls := make([]string, len(baseURLs))
 	copy(urls, baseURLs)
@@ -144,16 +111,14 @@ func sendToKiroCtx(ctx context.Context, creds Credentials, body []byte) (*http.R
 		creds.PSD.AuthMethod == "idc"
 
 	if isCodeWhispererSurface {
-		// Regionalize URLs based on token region (match VansRouter behavior)
 		region := strings.TrimSpace(creds.PSD.Region)
 		if region == "" {
 			region = "us-east-1"
 		}
-		
+
 		var amazon, others []string
 		for _, u := range urls {
 			if strings.Contains(u, "amazonaws.com") {
-				// Regionalize amazonaws.com URLs if not us-east-1
 				regionalized := regionalizeURL(u, region)
 				amazon = append(amazon, regionalized)
 			} else {
@@ -191,11 +156,7 @@ func sendToKiroCtx(ctx context.Context, creds Credentials, body []byte) (*http.R
 	return nil, fmt.Errorf("all kiro endpoints failed: %w", lastErr)
 }
 
-// ── Profile ARN discovery (OmniRoute discoverKiroProfileArnAcrossRegions) ──
-
-// DiscoverProfileArn discovers a Kiro profile ARN by probing the Q Developer
-// profile regions (us-east-1 / eu-central-1) with the given access token.
-// Returns the first ARN found, or "" when no profile is available.
+// DiscoverProfileArn — VansRouter: discoverKiroProfileArnAcrossRegions (external service)
 func DiscoverProfileArn(ctx context.Context, accessToken, storedRegion string) (string, error) {
 	token := strings.TrimSpace(accessToken)
 	if token == "" {
@@ -212,6 +173,7 @@ func DiscoverProfileArn(ctx context.Context, accessToken, storedRegion string) (
 	return "", nil
 }
 
+// buildProfileDiscoveryRegions — VansRouter: kiroRegion.ts priority logic
 func buildProfileDiscoveryRegions(storedRegion string) []string {
 	stored := strings.ToLower(strings.TrimSpace(storedRegion))
 	preferEu := strings.HasPrefix(stored, "eu-") ||
@@ -304,8 +266,7 @@ func listProfileArnForRegion(ctx context.Context, accessToken, region string) (s
 	return "", nil
 }
 
-// ── JSON helpers (avoid encoding/json import in every call site) ───────────
-
+// jsonMarshal/jsonDecode — Go-specific helpers
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }

@@ -17,6 +17,41 @@ import (
 	"farouter/internal/rtk"
 )
 
+// VansRouter ref: open-sse/executors/kiro.js — main execution pipeline
+//
+//   RetryConfig            → kiro.js DEFAULT_RETRY_CONFIG
+//   defaultRetryConfig     → kiro.js DEFAULT_RETRY_CONFIG
+//   resolveRetryEntry      → kiro.js resolveRetryEntry
+//   SetKiroThrottleMs      → kiro.js setKiroThrottle
+//   acquireThrottle        → kiro.js acquireKiroRequestSlot
+//   Execute                → kiro.js execute (streaming path)
+//   pipeKiroResponse       → kiro.js createPipeline (EventStream→SSE→passthrough)
+//   repairEnabled          → kiro.js repairEnabled
+//   ExecuteWithIntegrityCheck → kiro.js executeWithIntegrityCheck (full integrity gate)
+//   streamSSEBytes          → kiro.js streamSSEBytes (pre-buffered replay)
+//   writeIntegritySSE       → kiro.js writeIntegritySSE
+//   doIntegrityAttemptWithFallback → kiro.js doIntegrityAttemptWithFallback
+//   processIntegrityResponse → kiro.js processIntegrityResponse
+//   sendToKiroEndpoint      → kiro.js sendToKiroEndpoint (with FETCH_CONNECT_TIMEOUT_MS)
+//
+// AIClient2API ref: claude-kiro.js — auth + profileArn resolution + RTK compression
+
+// envPositiveInt reads an env var and returns the parsed positive int,
+// or fallback if unset / zero / invalid. VansRouter pattern for configurable timeouts.
+// VansRouter ref: kiro.js envPositiveInt — used for KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES,
+// KIRO_TOOL_CALL_REPAIR_TTFT_TIMEOUT_MS, KIRO_TOOL_CALL_REPAIR_STALL_TIMEOUT_MS
+func envPositiveInt(name string, fallback int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
 // RetryConfig mirrors vansrouter's DEFAULT_RETRY_CONFIG pattern.
 // Per-status-code retry: {attempts, delayMs}. Zero attempts = no retry (fallback only).
 type RetryConfigEntry struct {
@@ -87,6 +122,8 @@ func acquireThrottle(minIntervalMs int) {
 	throttleMu.Unlock()
 }
 
+// Execute runs the streaming Kiro pipeline (no integrity validation).
+// VansRouter ref: kiro.js execute — streaming path
 func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID, connectionID string, rtkEnabled bool) error {
 	acquireThrottle(0) // default 0ms; set >0 via config for rate limiting
 
@@ -187,7 +224,7 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			errBody, _ := io.ReadAll(resp.Body)
+			errBody := readResponsePrefix(resp.Body, 4096)
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusPaymentRequired {
 				return ErrExhausted
@@ -197,12 +234,12 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 					Reason  string `json:"reason"`
 					Message string `json:"message"`
 				}
-				json.Unmarshal(errBody, &e)
+				json.Unmarshal([]byte(errBody), &e)
 				if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
 					return ErrSuspended
 				}
 			}
-			lastErr = fmt.Errorf("kiro upstream: %s — %s", resp.Status, string(errBody))
+			lastErr = fmt.Errorf("kiro upstream: %s — %s", resp.Status, errBody)
 			lastStatus = resp.StatusCode
 			if urlIndex+1 < len(urls) {
 				continue
@@ -220,6 +257,7 @@ func Execute(ctx context.Context, creds Credentials, req ChatRequest, w http.Res
 	return fmt.Errorf("kiro: all %d endpoints failed with status %d", len(urls), lastStatus)
 }
 
+// VansRouter ref: kiro.js createPipeline — EventStream→SSE→passthrough pipeline
 func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseWriter, resolved ResolvedModel, toolNameMap map[string]string) error {
 	// Pipeline: Kiro EventStream → SSE → passthrough transform → client
 	sc := NewStreamController(ctx)
@@ -236,8 +274,9 @@ func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseW
 		}
 	}()
 
-	// Stage 2: Pipe with disconnect + stall watchdog (streamHandler.js pipeWithDisconnect)
-	pipeOut := PipeWithDisconnect(kiroPR, sc, StreamStallTimeoutMs, resolved.Upstream)
+	// Stage 2: Pipe with disconnect + dual timeout (TTFT + stall watchdog)
+	// VansRouter: first chunk = STREAM_FIRST_CHUNK_TIMEOUT_MS, subsequent = STREAM_STALL_TIMEOUT_MS
+	pipeOut := PipeWithDisconnect(kiroPR, sc, StreamFirstChunkTimeout, StreamStallTimeout, resolved.Upstream)
 
 	// Stage 3: Passthrough transform (stream.js createSSEStream PASSTHROUGH mode)
 	finalReader := createPassthroughTransform(pipeOut, sc, resolved.Upstream)
@@ -273,8 +312,22 @@ func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseW
 	}
 }
 
+// repairEnabled returns true unless disabled via env var or per-credential flag.
+// VansRouter pattern: KIRO_TOOL_CALL_REPAIR env + credentials.providerSpecificData.kiroToolCallRepair
+func repairEnabled(creds Credentials) bool {
+	if os.Getenv("KIRO_TOOL_CALL_REPAIR") == "false" {
+		return false
+	}
+	// Credential-level opt-out: kiroToolCallRepair=false on the connection
+	if !creds.PSD.KiroToolCallRepair && creds.PSD.KiroToolCallRepairSet {
+		return false
+	}
+	return true
+}
+
 // ExecuteWithIntegrityCheck runs Execute with the 9router integrity gate:
 // buffer full SSE, validate content, retry with repair instruction on ellipsis/short_final/invalid_tool.
+// VansRouter ref: kiro.js executeWithIntegrityCheck
 func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatRequest, w http.ResponseWriter, conversationID, connectionID string, rtkEnabled bool) error {
 	acquireThrottle(kiroThrottleMs)
 
@@ -340,15 +393,24 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	case IntegrityShortFinal:
 		repairKind = IntegrityShortFinal
 	case IntegrityInvalidTool:
+		if !repairEnabled(creds) {
+			// VansRouter: tool repair disabled → return error directly, no retry
+			writeIntegritySSE(w, encodeSSEErrorWithDiagnostics(
+				"kiro_integrity_repair_disabled",
+				"Kiro tool call repair is disabled for this account/connection",
+				result.Diagnostics,
+			))
+			return nil
+		}
 		repairKind = IntegrityInvalidTool
 	}
 	if repairKind == "" {
 		writeIntegritySSE(w, encodeSSEErrorWithDiagnostics("kiro_integrity_failed", "Kiro integrity validation failed: "+result.Message, result.Diagnostics))
 		return nil
 	}
-	
+
 	repairedBody := appendRepairInstruction(kiroReq.Body, repairKind)
-	
+
 	// Start heartbeat during repair to keep connection alive
 	heartbeatStop := make(chan struct{})
 	defer close(heartbeatStop)
@@ -369,7 +431,7 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 			}
 		}
 	}()
-	
+
 	result2 := doIntegrityAttemptWithFallback(ctx, creds, urls, repairedBody, resolved.Upstream, resolved.Thinking)
 	if result2.Kind == IntegrityComplete {
 		streamSSEBytes(ctx, w, result2.Bytes, resolved.Upstream)
@@ -394,9 +456,11 @@ func ExecuteWithIntegrityCheck(ctx context.Context, creds Credentials, req ChatR
 	return nil
 }
 
+// VansRouter ref: kiro.js streamSSEBytes — replay pre-buffered SSE
 func streamSSEBytes(ctx context.Context, w http.ResponseWriter, data []byte, model string) {
 	sc := NewStreamController(ctx)
-	pipeOut := PipeWithDisconnect(bytes.NewReader(data), sc, StreamStallTimeoutMs, model)
+	// Pre-buffered data: no TTFT needed, use stall timeout
+	pipeOut := PipeWithDisconnect(bytes.NewReader(data), sc, 0, StreamStallTimeout, model)
 	finalReader := createPassthroughTransform(pipeOut, sc, model)
 	for k, v := range SSEHeadersCORS {
 		w.Header().Set(k, v)
@@ -426,6 +490,7 @@ func streamSSEBytes(ctx context.Context, w http.ResponseWriter, data []byte, mod
 	}
 }
 
+// VansRouter ref: kiro.js writeIntegritySSE
 func writeIntegritySSE(w http.ResponseWriter, data []byte) {
 	for k, v := range SSEHeadersCORS {
 		w.Header().Set(k, v)
@@ -436,6 +501,7 @@ func writeIntegritySSE(w http.ResponseWriter, data []byte) {
 	}
 }
 
+// VansRouter ref: kiro.js doIntegrityAttemptWithFallback
 func doIntegrityAttemptWithFallback(ctx context.Context, creds Credentials, urls []string, body []byte, model string, thinkingEnabled bool) *IntegrityResult {
 	var lastErr error
 	retryAttemptsByUrl := make(map[int]int)
@@ -496,7 +562,7 @@ func doIntegrityAttemptWithFallback(ctx context.Context, creds Credentials, urls
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			errBody, _ := io.ReadAll(resp.Body)
+			errBody := readResponsePrefix(resp.Body, 4096)
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusPaymentRequired {
 				return &IntegrityResult{Kind: IntegrityAccountError, Message: ErrExhausted.Error()}
@@ -506,12 +572,12 @@ func doIntegrityAttemptWithFallback(ctx context.Context, creds Credentials, urls
 					Reason  string `json:"reason"`
 					Message string `json:"message"`
 				}
-				json.Unmarshal(errBody, &e)
+				json.Unmarshal([]byte(errBody), &e)
 				if e.Reason == "TEMPORARILY_SUSPENDED" || strings.Contains(strings.ToLower(e.Message), "suspended") {
 					return &IntegrityResult{Kind: IntegrityAccountError, Message: ErrSuspended.Error()}
 				}
 			}
-			lastErr = fmt.Errorf("kiro upstream: %s — %s", resp.Status, string(errBody))
+			lastErr = fmt.Errorf("kiro upstream: %s — %s", resp.Status, errBody)
 			if urlIndex+1 < len(urls) {
 				continue
 			}
@@ -528,6 +594,18 @@ func doIntegrityAttemptWithFallback(ctx context.Context, creds Credentials, urls
 	}
 }
 
+// readResponsePrefix reads up to maxBytes from the response body for error diagnostics.
+// VansRouter ref: kiro.js readResponsePrefix — bounded read, prevents giant error bodies.
+func readResponsePrefix(r io.Reader, maxBytes int) string {
+	limited := io.LimitReader(r, int64(maxBytes))
+	b, err := io.ReadAll(limited)
+	if err != nil {
+		return fmt.Sprintf("(read error: %v)", err)
+	}
+	return string(b)
+}
+
+// VansRouter ref: kiro.js processIntegrityResponse — SSE transform + validate
 func processIntegrityResponse(resp *http.Response, model string, thinkingEnabled bool) *IntegrityResult {
 	var buf bytes.Buffer
 	var diagResult *IntegrityDiagnostics
@@ -553,11 +631,18 @@ func processIntegrityResponse(resp *http.Response, model string, thinkingEnabled
 		}
 	}
 
-	return validateIntegrity(bytes.NewReader(buf.Bytes()), KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES, diagResult)
+	maxBytes := envPositiveInt("KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES", KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES)
+	return validateIntegrity(bytes.NewReader(buf.Bytes()), maxBytes, diagResult)
 }
 
-
-
+// sendToKiroEndpoint sends the request to a single Kiro URL.
+// NOTE: context.WithTimeout untuk connect timeout TIDAK dipakai di sini karena
+// Go's resp.Body terikat ke request context — wrapping dengan timeout akan membunuh
+// stream setelah N detik, bukan cuma connection phase.
+// VansRouter JS clearTimeout(fetchTimeoutId) setelah response headers diterima;
+// Go tidak punya mekanisme equivalent, jadi timeout streaming diserahkan ke
+// PipeWithDisconnect (TTFT 200s + stall 360s).
+// VansRouter ref: kiro.js sendToKiroEndpoint — FETCH_CONNECT_TIMEOUT_MS (connect only)
 func sendToKiroEndpoint(ctx context.Context, creds Credentials, url string, body []byte) (*http.Response, error) {
 	headers := BuildKiroHeaders(creds)
 

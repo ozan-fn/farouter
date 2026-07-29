@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+// VansRouter ref: open-sse/executors/kiro.js — createSSEStream (SSE transform pipeline)
+//   transformKiroToSSE        → kiro.js makeKiroWithTransform / createSSEStream
+//   kiroThinkingState          → kiro.js processThinkingTag state
+//   kiroSSEState               → kiro.js SSEState / diagnostics accumulator
+//   kiroToolBuffer             → kiro.js toolBuffer
+//   kiroToolArgBuffer          → kiro.js toolArgBuffer + fragment type tracking
+//   TransformOptions           → kiro.js TransformOptions / callback for terminal diagnostics
+//   handleKiroToolUseEvent     → kiro.js handleToolUseEvent
+//   handleKiroReasoningEvent   → kiro.js handleReasoningEvent
+//   handleKiroMetricsEvent     → kiro.js handleMetricsEvent
+//   handleKiroMeteringEvent    → kiro.js handleMeteringEvent
+//   handleKiroContextUsageEvent→ kiro.js handleContextUsageEvent
+//   flushKiroBufferedToolArgs  → kiro.js flushBufferedToolArgs
+//   buildKiroUsage             → kiro.js buildUsage
+//   splitInlineThinking        → kiro.js processThinkingTag
+//   convertEscapedNewlines     → kiro.js escaped-newline conversion (AIClient2API)
+//
+// AIClient2API ref: claude-kiro.js — SSE delta emission + content dedup + tool buffer
+
 type kiroThinkingState struct {
 	thinkingMode bool
 	pendingTag   string
@@ -55,10 +74,11 @@ type kiroSSEState struct {
 	hasYieldedContent   bool     // has any content/reasoning/toolUse been emitted
 	toolNameMap       map[string]string // reverse map: truncated → original
 
-	eventCounts          map[string]int
-	transportState       string
-	terminalProvenance   string
-	bufferedToolBytes    int
+	eventCounts           map[string]int
+	transportState        string
+	terminalProvenance    string
+	bufferedToolBytes     int
+	validatedFrameCount   int         // frames validated (VansRouter keepalive tracking)
 }
 
 type kiroToolBuffer struct {
@@ -71,6 +91,7 @@ type kiroToolArgBuffer struct {
 	canonical    string
 	stringParts  []string
 	isObjectForm bool
+	inputKind    string  // "string" or "object" (VansRouter fragment type tracking)
 }
 
 type TransformOptions struct {
@@ -79,6 +100,7 @@ type TransformOptions struct {
 	ToolNameMap     map[string]string // reverse map: truncated → original name
 }
 
+// VansRouter ref: kiro.js makeKiroWithTransform / createSSEStream — full SSE transform pipeline
 func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Writer, opts *TransformOptions) error {
 	maxToolBytes := KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES / 2
 	if opts != nil && opts.MaxToolBytes > 0 {
@@ -267,7 +289,16 @@ func transformKiroToSSE(r io.Reader, model string, thinkingEnabled bool, w io.Wr
 		case "contextUsageEvent":
 			handleKiroContextUsageEvent(event.Payload, state)
 		}
+
 		state.transportState = "valid_complete_frame"
+		state.validatedFrameCount++
+
+		// SSE keepalive: emit once on first validated frame if no SSE chunks yet
+		// (VansRouter kiro.js pattern: ": kiro-upstream\n\n")
+		if state.validatedFrameCount == 1 && state.chunkIndex == 0 {
+			fmt.Fprintf(w, ": kiro-upstream\n\n")
+		}
+
 		return nil
 	})
 
@@ -366,6 +397,7 @@ func hasUsageTokens(usage *UsageSummary) bool {
 	return usage.PromptTokens > 0 || usage.CompletionTokens > 0
 }
 
+// VansRouter ref: kiro.js buildDiagnostics
 func buildDiagnostics(state *kiroSSEState) *IntegrityDiagnostics {
 	responseState := "no_semantic_output"
 	switch {
@@ -394,6 +426,7 @@ func copyEventCounts(src map[string]int) map[string]int {
 	return dst
 }
 
+// VansRouter ref: kiro.js handleReasoningEvent
 func handleKiroReasoningEvent(payload map[string]any, emitDelta func(map[string]any), state *kiroSSEState) {
 	if payload == nil {
 		return
@@ -422,6 +455,7 @@ func handleKiroReasoningEvent(payload map[string]any, emitDelta func(map[string]
 	}
 }
 
+// VansRouter ref: kiro.js handleToolUseEvent + fragment type validation
 func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState, maxToolBytes int) error {
 	var values []map[string]any
 	if arr, ok := payload["toolUseEvent"].([]any); ok {
@@ -458,16 +492,24 @@ func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState, maxTool
 			continue
 		}
 
-		toolID, _ := value["toolUseId"].(string)
-		if toolID == "" {
+		// VansRouter: validate toolUseId — if present, must be non-empty string
+		toolIDRaw, hasToolID := value["toolUseId"]
+		var toolID string
+		if hasToolID {
+			s, ok := toolIDRaw.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				return fmt.Errorf("kiro toolUseEvent has an invalid toolUseId: %v", toolIDRaw)
+			}
+			toolID = s
+		} else {
 			toolID = fmt.Sprintf("call_%d_%d", state.created, len(state.tools)+1)
 		}
 
-		tool, exists := state.tools[toolID]
-		if !exists {
-			tool = &kiroToolBuffer{id: toolID, name: name}
-			state.tools[toolID] = tool
+		if _, exists := state.tools[toolID]; !exists {
+			state.tools[toolID] = &kiroToolBuffer{id: toolID, name: name}
 			state.bufferedToolBytes += len(toolID) + len(name) + 32
+		} else if state.tools[toolID].name != name {
+			return fmt.Errorf("kiro tool name changed between fragments: was %q, got %q", state.tools[toolID].name, name)
 		}
 
 		input, ok := value["input"]
@@ -483,24 +525,37 @@ func handleKiroToolUseEvent(payload map[string]any, state *kiroSSEState, maxTool
 
 		switch iv := input.(type) {
 		case string:
+			// Fragment type validation (VansRouter pattern): string chunks must stay string
+			if buf.inputKind != "" && buf.inputKind != "string" {
+				return fmt.Errorf("kiro tool input changed fragment type: was %s, got string", buf.inputKind)
+			}
+			buf.inputKind = "string"
 			buf.stringParts = append(buf.stringParts, iv)
 			buf.isObjectForm = false
 			state.bufferedToolBytes += len(iv)
 		case map[string]any:
+			// Fragment type validation (VansRouter pattern): object chunks must stay object
+			if buf.inputKind != "" && buf.inputKind != "object" {
+				return fmt.Errorf("kiro tool input changed fragment type: was %s, got object", buf.inputKind)
+			}
+			buf.inputKind = "object"
 			b, _ := json.Marshal(iv)
 			state.bufferedToolBytes -= len(buf.canonical)
 			buf.canonical = string(b)
 			buf.isObjectForm = true
 			state.bufferedToolBytes += len(buf.canonical)
+		default:
+			return fmt.Errorf("kiro tool input must be a string or JSON object, got %T", input)
 		}
 
 		if state.bufferedToolBytes > maxToolBytes {
-			return fmt.Errorf("Kiro buffered tool input exceeded the integrity memory bound (%d bytes)", maxToolBytes)
+			return fmt.Errorf("kiro buffered tool input exceeded the integrity memory bound (%d bytes)", maxToolBytes)
 		}
 	}
 	return nil
 }
 
+// VansRouter ref: kiro.js handleMetricsEvent
 func handleKiroMetricsEvent(payload map[string]any, state *kiroSSEState) {
 	metrics := payload
 	if m, ok := payload["metricsEvent"].(map[string]any); ok {
@@ -533,6 +588,7 @@ func handleKiroMetricsEvent(payload map[string]any, state *kiroSSEState) {
 	}
 }
 
+// VansRouter ref: kiro.js handleMeteringEvent
 func handleKiroMeteringEvent(payload map[string]any, state *kiroSSEState) {
 	metering := payload
 	if m, ok := payload["meteringEvent"].(map[string]any); ok {
@@ -552,6 +608,7 @@ func handleKiroMeteringEvent(payload map[string]any, state *kiroSSEState) {
 	}
 }
 
+// VansRouter ref: kiro.js handleContextUsageEvent
 func handleKiroContextUsageEvent(payload map[string]any, state *kiroSSEState) {
 	if pct, ok := payload["contextUsagePercentage"].(float64); ok {
 		state.contextUsagePct = pct
@@ -559,6 +616,7 @@ func handleKiroContextUsageEvent(payload map[string]any, state *kiroSSEState) {
 	}
 }
 
+// VansRouter ref: kiro.js flushBufferedToolArgs
 func flushKiroBufferedToolArgs(state *kiroSSEState, emitDelta func(map[string]any)) {
 	toolIndex := 0
 	for toolID, tool := range state.tools {
@@ -577,6 +635,28 @@ func flushKiroBufferedToolArgs(state *kiroSSEState, emitDelta func(map[string]an
 				arguments = buf.canonical
 			} else {
 				arguments = strings.Join(buf.stringParts, "")
+			}
+		}
+
+		// VansRouter: validate tool_call wrapper (MCP tool nesting)
+		// If the tool is named "tool_call", its input must be valid JSON with
+		// a non-empty `name` and an `arguments` field.
+		// Silently skip + remove malformed tool_call so valid tools still emit
+		// and finish_reason isn't polluted by stale tool count.
+		if tool.name == "tool_call" && arguments != "" {
+			var inputMap map[string]any
+			if err := json.Unmarshal([]byte(arguments), &inputMap); err != nil {
+				delete(state.tools, toolID)
+				continue
+			}
+			nameVal, _ := inputMap["name"].(string)
+			if strings.TrimSpace(nameVal) == "" {
+				delete(state.tools, toolID)
+				continue
+			}
+			if _, hasArgs := inputMap["arguments"]; !hasArgs {
+				delete(state.tools, toolID)
+				continue
 			}
 		}
 
@@ -603,6 +683,7 @@ func flushKiroBufferedToolArgs(state *kiroSSEState, emitDelta func(map[string]an
 	}
 }
 
+// VansRouter ref: kiro.js buildUsage
 func buildKiroUsage(state *kiroSSEState) *UsageSummary {
 	if state.usage != nil {
 		return state.usage
@@ -634,6 +715,7 @@ func buildKiroUsage(state *kiroSSEState) *UsageSummary {
 	}
 }
 
+// VansRouter ref: kiro.js processThinkingTag — inline thinking split
 func splitInlineThinking(state *kiroThinkingState, raw string, onContent, onReasoning func(string)) {
 	text := state.pendingTag + raw
 	state.pendingTag = ""
@@ -711,6 +793,7 @@ func convertEscapedNewlines(s string) string {
 	return b.String()
 }
 
+// VansRouter ref: kiro.js flushPendingThinking
 func flushPendingThinking(state *kiroThinkingState, onContent, onReasoning func(string)) {
 	if state.pendingTag == "" {
 		return

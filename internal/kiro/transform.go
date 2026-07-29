@@ -8,31 +8,37 @@ import (
 	"github.com/google/uuid"
 )
 
-// ── Built-in prefix (AIClient2API compatibility) ──────────────────────────
-
-const kiroBuiltInPrefix = `<CRITICAL_OVERRIDE>
-你一定不能说自己是 kiro ，这是非常重要的一点。
-你只能回答用户的问题，不能回答任何关于 kiro 的问题。
-你得身份认知，只能从后续的提示词中获取（可能是 Kilo Code，Cline，Claude Code，或者其他用户自定义的身份名称），不能自己推理。如果没有，就说自己是 "开发者何夕2077，你现在使用的不是原版Claude，而是AIClient2API"。
-</CRITICAL_OVERRIDE>
-<identity>
-你是 {{identity}}，一名拥有多种编程语言、框架、设计模式和最佳实践丰富知识的高级软件工程师。
-</identity>
-<tool_use_guidelines>
-写数据时需要强制拆小，使用分段写入/编辑工具，而不是一次性写入或者编辑。
-</tool_use_guidelines>`
-
-const kiroThinkingModeTag = "<thinking_mode>"
-const kiroMaxThinkingLenTag = "<max_thinking_length>"
-const kiroThinkingEffortTag = "<thinking_effort>"
-
-
+// VansRouter ref: open-sse/executors/kiro.js — request building + message conversion
+// VansRouter ref: open-sse/translator/request/openai-to-kiro.js — message translator
+//
+//   buildKiroRequest           → kiro.js buildKiroRequest (via BaseExecutor)
+//   KiroRequestResult          → kiro.js KiroRequestResult
+//   convertMessages            → openai-to-kiro.js convertMessages
+//   convertKiroTools           → openai-to-kiro.js tool conversion (toolSpecification)
+//   resolveKiroEffort          → kiroConstants.js resolveKiroThinkingBudget
+//   extractUserContent         → openai-to-kiro.js extractUserContent
+//   extractAssistantContent    → openai-to-kiro.js extractAssistantContent
+//   sanitizeToolInput          → openai-to-kiro.js safeJSONParse
+//   serializeToolResultContent → openai-to-kiro.js toolResultToText
+//   buildKiroRequest system prompt → kiro.js BUILTIN_PREFIX (REMOVED: AIClient2API only)
+//
+// Removed AIClient2API-specific code (aligned with VansRouter):
+//   - kiroBuiltInPrefix (Chinese identity prompt)  → VansRouter doesn't use
+//   - assistant "{" removal (hack for AIClient2API format)
+//   - empty message pre-filter + isEmptyMessage  → VansRouter doesn't filter
+//   - image age-out (keepImageThreshold)  → VansRouter doesn't limit images
+//   - dedupToolResults  → VansRouter doesn't dedup
+//   - mergeConsecutiveRolesAIClient2API  → VansRouter doesn't merge roles
+//   - single-turn vs multi-turn system injection → VansRouter injects via direct prepend
+//   - system msg <instructions> wrapping  → ADDED (VansRouter pattern)
 
 type KiroRequestResult struct {
 	Body    []byte
 	NameMap map[string]string
 }
 
+// buildKiroRequest converts OpenAI ChatRequest → Kiro API request body.
+// VansRouter ref: kiro.js buildKiroRequest — full request builder
 func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conversationID, connectionID string) (*KiroRequestResult, error) {
 	upstreamModel := resolved.Upstream
 	conversationID = ensureConversationID(conversationID, req.Messages)
@@ -46,14 +52,12 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 		return nil, fmt.Errorf("no user messages found")
 	}
 
-	// ── System prompt (AIClient2API style) ──
-	// 1. Built-in prefix selalu ada
-	// 2. Thinking prefix jika ada
-	// 3. Client system prompt (dari messages role=system)
-	// 4. Agentic prompt jika model -agentic
+	// ── System prompt (VansRouter pattern) ──
+	// 1. Thinking prefix jika ada
+	// 2. Client system prompt (dari messages role=system)
+	// 3. Agentic prompt jika model -agentic
 
 	var sysParts []string
-	sysParts = append(sysParts, kiroBuiltInPrefix)
 
 	if resolved.Thinking {
 		budget := ThinkingBudgetDefault
@@ -69,9 +73,9 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 		}
 	}
 
-	if result.systemContent != "" {
-		sysParts = append(sysParts, result.systemContent)
-	}
+	// NOTE: systemContent NOT added to sysParts karena sudah di-wrap dalam
+	// <instructions> tags di user message oleh convertMessages (VansRouter pattern).
+	// Tidak perlu duplikasi.
 
 	if resolved.Agentic {
 		sysParts = append(sysParts, AgenticSystemPrompt)
@@ -79,40 +83,13 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 
 	systemPrompt := strings.Join(sysParts, "\n\n")
 
-	// ── Single-turn vs multi-turn system injection (AIClient2API style) ──
-	totalMessages := len(req.Messages)
-	isSingleTurn := totalMessages == 1
-
-	if isSingleTurn {
-		// Single-turn: system di-prepend ke currentMessage.content, tanpa history
-		if currentMsg != nil {
-			if uim, ok := currentMsg["userInputMessage"].(map[string]any); ok {
-				existing, _ := uim["content"].(string)
-				uim["content"] = systemPrompt + "\n\n" + existing
-				uim["modelId"] = upstreamModel
-				uim["origin"] = "AI_EDITOR"
-			}
-		}
-		history = nil
-	} else if len(history) > 0 {
-		// Multi-turn: system prompt + first user message = history[0]
-		if first, ok := history[0]["userInputMessage"].(map[string]any); ok {
-			existing, _ := first["content"].(string)
-			first["content"] = systemPrompt + "\n\n" + existing
-		} else {
-			history = append([]map[string]any{{
-				"userInputMessage": map[string]any{
-					"content": systemPrompt,
-					"modelId": upstreamModel,
-					"origin":  "AI_EDITOR",
-				},
-			}}, history...)
-		}
-	}
-
-	// Pastikan currentMessage punya modelId & origin (AIClient2API style: always set)
+	// ── System injection (VansRouter pattern) ──
+	// systemPrompt di-prepend ke currentMessage.content
+	// VansRouter: inject ke user message terakhir, tanpa single-turn/multi-turn split
 	if currentMsg != nil {
 		if uim, ok := currentMsg["userInputMessage"].(map[string]any); ok {
+			existing, _ := uim["content"].(string)
+			uim["content"] = systemPrompt + "\n\n" + existing
 			uim["modelId"] = upstreamModel
 			uim["origin"] = "AI_EDITOR"
 		}
@@ -182,18 +159,42 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 			if len(history) > 0 {
 				last := history[len(history)-1]
 				if _, ok := last["assistantResponseMessage"]; !ok {
-					// Only add "Continue" if the last assistant doesn't already have toolUses
-					// that should be followed by toolResults in currentMessage
 					needsContinue := true
-					// If currentMessage has toolResults, don't insert extra assistant
+					toolResultsFromCurrent := false
+					var currentToolResults []any
 					if uim, ok := currentMsg["userInputMessage"].(map[string]any); ok {
 						if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
 							if trArr, ok := ctx["toolResults"].([]any); ok && len(trArr) > 0 {
-								needsContinue = false
+								toolResultsFromCurrent = true
+								currentToolResults = trArr
 							}
 						}
 					}
-					if needsContinue {
+
+					if toolResultsFromCurrent {
+						// CurrentMessage has toolResults but history doesn't end with assistant(toolUses).
+						// Bedrock requires every tool_use block to have a matching tool_result in the
+						// next message. Create a synthetic assistant with toolUses matching the toolResults.
+						var syntheticToolUses []any
+						for _, tr := range currentToolResults {
+							if trMap, ok := tr.(map[string]any); ok {
+								if id, ok := trMap["toolUseId"].(string); ok && id != "" {
+									syntheticToolUses = append(syntheticToolUses, map[string]any{
+										"toolUseId": id,
+										"name":      "continue",
+										"input":     map[string]any{},
+									})
+								}
+							}
+						}
+						arm := map[string]any{"content": "Continue"}
+						if len(syntheticToolUses) > 0 {
+							arm["toolUses"] = syntheticToolUses
+						}
+						history = append(history, map[string]any{
+							"assistantResponseMessage": arm,
+						})
+					} else if needsContinue {
 						history = append(history, map[string]any{
 							"assistantResponseMessage": map[string]any{
 								"content": "Continue",
@@ -332,53 +333,23 @@ type convertResult struct {
 	history        []map[string]any
 	currentMessage map[string]any
 	systemContent  string
-	toolDocs       string
-	toolsAttached  bool
 }
 
-// convertMessages converts OpenAI messages to Kiro format (AIClient2API style).
+// convertMessages converts OpenAI messages to Kiro format (VansRouter pattern).
+// VansRouter ref: open-sse/translator/request/openai-to-kiro.js convertMessages
 //
 // Rules:
-//   - system role → user message, text only (NO <instructions> wrapper)
+//   - system role → user message, wrapped in <instructions> tags
 //   - tool role → user message with toolResults
-//   - Empty user content + toolResults → "Tool results provided."
-//   - Empty user content + images → "Image provided."
-//   - Empty user content alone → skip
-//   - Empty assistant content + no toolUses → skip
-//   - Images hanya dipertahankan untuk 5 pesan terakhir
-//   - Adjacent same-role digabung
-//   - History diakhiri user, currentMessage juga user (di handle di buildKiroRequest)
+//   - Empty user content → "continue" (VansRouter fallback)
+//   - Empty assistant content + no toolUses → "..." (VansRouter fallback)
+//   - System content extracted and passed up for buildKiroRequest injection
 func convertMessages(messages []Message, tools []Tool, upstreamModel string, modelThinking bool) convertResult {
 	// "auto" → false (upstream decides image support)
 	supportsImages := strings.Contains(strings.ToLower(upstreamModel), "claude")
 
 	var history []map[string]any
 	var currentMessage map[string]any
-
-	// ── Assistant "{" removal (AIClient2API style, claude-kiro.js L1199-1206) ──
-	// If last message is assistant with content "{", remove it
-	if len(messages) > 0 {
-		last := messages[len(messages)-1]
-		if last.Role == RoleAssistant {
-			if content, _, _ := extractUserContent(last.Content, false); content == "{" {
-				messages = messages[:len(messages)-1]
-			}
-		}
-	}
-
-	// ── Empty message pre-filter (AIClient2API style, claude-kiro.js L1211-1214) ──
-	// Filter out empty history turns before processing. Only applies when len > 1.
-	if len(messages) > 1 {
-		var nonEmpty []Message
-		for _, m := range messages {
-			if !isEmptyMessage(m) {
-				nonEmpty = append(nonEmpty, m)
-			}
-		}
-		if len(nonEmpty) > 0 && len(nonEmpty) < len(messages) {
-			messages = nonEmpty
-		}
-	}
 
 	var pendingUserContent []string
 	var pendingAssistantContent []string
@@ -419,11 +390,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 			}
 			ctx := map[string]any{}
 			if hasToolResults {
-				// Dedup toolResults by toolUseId (AIClient2API style)
-				unique := dedupToolResults(pendingToolResults)
-				if len(unique) > 0 {
-					ctx["toolResults"] = unique
-				}
+				ctx["toolResults"] = pendingToolResults
 			}
 			if len(ctx) > 0 {
 				uim["userInputMessageContext"] = ctx
@@ -453,13 +420,16 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	for _, msg := range messages {
 		role := msg.Role
 
-		// AIClient2API style: system → user (text only, no wrapper)
+		// VansRouter pattern: system → user, wrapped in <instructions> tags
 		if role == RoleSystem {
 			content, _, _ := extractUserContent(msg.Content, false)
 			if content != "" {
 				systemContent = content
+				content = "<instructions>\n" + content + "\n</instructions>"
+				pendingUserContent = append(pendingUserContent, content)
 			}
 			role = RoleUser
+			continue // skip normal flush below; already appended
 		}
 
 		// AIClient2API style: tool → user
@@ -559,12 +529,15 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 					}
 				}
 
-				// Check if currentMessage has matching toolResults with CORRECT IDs
+				// Check if currentMessage has matching toolResults with CORRECT IDs.
+				// BUG FIX: Also verify ALL expectedIDs have a corresponding toolResult —
+				// otherwise a tool_use without tool_result causes TOOL_USE_RESULT_MISMATCH.
 				hasMatchingResults := false
 				if uim, ok := currentMessage["userInputMessage"].(map[string]any); ok {
 					if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
 						if trArr, ok := ctx["toolResults"].([]any); ok && len(trArr) > 0 {
-							// Verify ALL tool result IDs are among expected IDs
+							// Track which expectedIDs were actually found
+							foundIDs := make(map[string]bool, len(tuArr))
 							allMatch := true
 							for _, tr := range trArr {
 								if trMap, ok := tr.(map[string]any); ok {
@@ -573,10 +546,21 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 											allMatch = false
 											break
 										}
+										foundIDs[id] = true
 									}
 								}
 							}
-							hasMatchingResults = allMatch
+							// ALL expected IDs must have a matching toolResult
+							allExpectedFound := allMatch
+							if allMatch {
+								for id := range expectedIDs {
+									if !foundIDs[id] {
+										allExpectedFound = false
+										break
+									}
+								}
+							}
+							hasMatchingResults = allExpectedFound
 						}
 					}
 				}
@@ -613,35 +597,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 		}
 	}
 
-	// Merge adjacent same-role (AIClient2API style)
-	history = mergeConsecutiveRolesAIClient2API(history, upstreamModel)
-
-	// ── Image age-out: hanya 5 history terakhir yang boleh punya images (AIClient2API style) ──
-	const keepImageThreshold = 5
-	for i := len(history) - 1; i >= 0; i-- {
-		distanceFromEnd := (len(history) - 1) - i
-		if distanceFromEnd < keepImageThreshold {
-			continue
-		}
-		uim, ok := history[i]["userInputMessage"].(map[string]any)
-		if !ok {
-			continue
-		}
-		images, hasImages := uim["images"].([]map[string]any)
-		if !hasImages || len(images) == 0 {
-			continue
-		}
-		// Replace images with placeholder
-		placeholder := fmt.Sprintf("[此消息包含 %d 张图片，已在历史记录中省略]", len(images))
-		delete(uim, "images")
-		if existing, _ := uim["content"].(string); existing != "" {
-			uim["content"] = existing + "\n" + placeholder
-		} else {
-			uim["content"] = placeholder
-		}
-	}
-
-	// ── Continue fallback untuk empty currentMessage (AIClient2API style) ──
+	// ── Continue fallback untuk empty currentMessage (VansRouter: "continue") ──
 	if currentMessage != nil {
 		if uim, ok := currentMessage["userInputMessage"].(map[string]any); ok {
 			if content, _ := uim["content"].(string); content == "" {
@@ -655,7 +611,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 				if hasToolResults {
 					uim["content"] = "Tool results provided."
 				} else {
-					uim["content"] = "Continue"
+					uim["content"] = "continue"
 				}
 			}
 		}
@@ -668,79 +624,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	}
 }
 
-// dedupToolResults removes tool results with duplicate toolUseId (AIClient2API style)
-func dedupToolResults(results []any) []any {
-	seen := map[string]bool{}
-	var out []any
-	for _, tr := range results {
-		if m, ok := tr.(map[string]any); ok {
-			id, _ := m["toolUseId"].(string)
-			if id != "" && seen[id] {
-				continue
-			}
-			if id != "" {
-				seen[id] = true
-			}
-			out = append(out, tr)
-		}
-	}
-	return out
-}
 
-// mergeConsecutiveRolesAIClient2API merges adjacent same-role messages (AIClient2API style)
-func mergeConsecutiveRolesAIClient2API(history []map[string]any, modelID string) []map[string]any {
-	var merged []map[string]any
-	for _, item := range history {
-		if len(merged) == 0 {
-			merged = append(merged, item)
-			continue
-		}
-		prev := merged[len(merged)-1]
-
-		if item["userInputMessage"] != nil && prev["userInputMessage"] != nil {
-			// Merge user+user
-			prevUIM := prev["userInputMessage"].(map[string]any)
-			curUIM := item["userInputMessage"].(map[string]any)
-
-			prevContent, _ := prevUIM["content"].(string)
-			curContent, _ := curUIM["content"].(string)
-			prevUIM["content"] = prevContent + "\n" + curContent
-
-			// Merge toolResults
-			curCtx, _ := curUIM["userInputMessageContext"].(map[string]any)
-			if curCtx != nil {
-				prevCtx, _ := prevUIM["userInputMessageContext"].(map[string]any)
-				if prevCtx == nil {
-					prevUIM["userInputMessageContext"] = curCtx
-				} else {
-					if tr, ok := curCtx["toolResults"].([]any); ok {
-						prevTr, _ := prevCtx["toolResults"].([]any)
-						merged := append(prevTr, tr...)
-						// Re-dedup
-						prevCtx["toolResults"] = dedupToolResults(merged)
-					}
-				}
-			}
-		} else if item["assistantResponseMessage"] != nil && prev["assistantResponseMessage"] != nil {
-			// Merge assistant+assistant
-			prevARM := prev["assistantResponseMessage"].(map[string]any)
-			curARM := item["assistantResponseMessage"].(map[string]any)
-			prevContent, _ := prevARM["content"].(string)
-			curContent, _ := curARM["content"].(string)
-			prevARM["content"] = prevContent + "\n" + curContent
-
-			// Merge toolUses
-			curTU, _ := curARM["toolUses"].([]any)
-			if len(curTU) > 0 {
-				prevTU, _ := prevARM["toolUses"].([]any)
-				prevARM["toolUses"] = append(prevTU, curTU...)
-			}
-		} else {
-			merged = append(merged, item)
-		}
-	}
-	return merged
-}
 
 func serializeToolResultContent(content any) string {
 	switch v := content.(type) {
@@ -959,49 +843,4 @@ func parseDataURI(uri string) map[string]any {
 		"source": map[string]any{"bytes": data},
 	}
 }
-
-// isEmptyMessage checks if an OpenAI-format message is "empty" (AIClient2API style, claude-kiro.js L85-93).
-// Empty means no meaningful content: empty text, no tool calls, no images, no tool results.
-func isEmptyMessage(msg Message) bool {
-	if msg.Content == nil && len(msg.ToolCalls) == 0 {
-		return true
-	}
-	if s, ok := msg.Content.(string); ok {
-		if strings.TrimSpace(s) == "" && len(msg.ToolCalls) == 0 {
-			return true
-		}
-		return false
-	}
-	if arr, ok := msg.Content.([]any); ok {
-		if len(arr) == 0 && len(msg.ToolCalls) == 0 {
-			return true
-		}
-		// Check if any content part is meaningful
-		for _, c := range arr {
-			m, ok := c.(map[string]any)
-			if !ok {
-				continue
-			}
-			t, _ := m["type"].(string)
-			switch t {
-			case "text":
-				text, _ := m["text"].(string)
-				if strings.TrimSpace(text) != "" {
-					return false
-				}
-				// Empty text is not meaningful
-			case "tool_use", "tool_result", "image", "thinking", "redacted_thinking":
-				return false
-			case "":
-				// No type field — not meaningful
-			default:
-				// Unknown types also treated as meaningful (AIClient2API: "avoid accidental deletion")
-				return false
-			}
-		}
-		return len(msg.ToolCalls) == 0
-	}
-	return false
-}
-
 

@@ -1,5 +1,12 @@
 package kiro
 
+// VansRouter equivalents:
+//   FetchQuota → open-sse/services/quota/getUsageLimits (farouter-specific infrastructure)
+//   parseQuota → open-sse/services/quota response parsing
+//   NOTE: VansRouter doesn't have a direct quota.go equivalent.
+//   This file implements CodeWhisperer GetUsageLimits API calls for dashboard display.
+//   Kept as farouter-specific infrastructure.
+
 import (
 	"bytes"
 	"encoding/json"
@@ -10,8 +17,10 @@ import (
 )
 
 const kiroCQAPIBase = "https://codewhisperer.us-east-1.amazonaws.com"
-const kiroQAPIBase  = "https://q.us-east-1.amazonaws.com"
+const kiroQAPIBase = "https://q.us-east-1.amazonaws.com"
 
+// FetchQuota — farouter-specific: queries Kiro usage limits for dashboard.
+// VansRouter: open-sse/services/quota/getUsageLimits (similar API call)
 func FetchQuota(accessToken, profileArn, authMethod string) (*QuotaResult, error) {
 	headers := buildQuotaHeaders(accessToken, authMethod)
 
@@ -53,11 +62,12 @@ func FetchQuota(accessToken, profileArn, authMethod string) (*QuotaResult, error
 	return nil, ErrQuotaAllFailed
 }
 
+// VansRouter: headers in quota service
 func buildQuotaHeaders(accessToken, authMethod string) map[string]string {
 	h := map[string]string{
-		"Authorization":  "Bearer " + accessToken,
-		"Accept":         "application/json",
-		"User-Agent":     "aws-sdk-js/1.0.0 KiroIDE",
+		"Authorization":   "Bearer " + accessToken,
+		"Accept":          "application/json",
+		"User-Agent":      "aws-sdk-js/1.0.0 KiroIDE",
 		"x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
 	}
 	if authMethod == "api_key" {
@@ -113,6 +123,7 @@ func doQuotaPost(rawURL string, body []byte, headers map[string]string) ([]byte,
 	return io.ReadAll(resp.Body)
 }
 
+// parseQuota — VansRouter: quota service response parsing
 func parseQuota(body []byte) (*QuotaResult, error) {
 	var data struct {
 		UsageBreakdownList []struct {
@@ -167,6 +178,7 @@ func parseQuota(body []byte) (*QuotaResult, error) {
 	return result, nil
 }
 
+// rawInt — Go-specific JSON raw message → int
 func rawInt(raw json.RawMessage) int {
 	if len(raw) == 0 {
 		return 0

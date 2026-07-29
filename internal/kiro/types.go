@@ -4,6 +4,27 @@ import (
 	"fmt"
 )
 
+// VansRouter ref: open-sse/executors/kiro.js — model resolution + types
+// VansRouter ref: open-sse/config/kiroConstants.js — constants
+// VansRouter ref: open-sse/config/runtimeConfig.js — runtime config
+//
+// Types:
+//   ProviderSpecificData   → CredentialsProviderData (kiro.js)
+//   Credentials            → Credentials (kiro.js auth handler)
+//   ChatRequest            → ChatRequest (kiro.js execute)
+//   ResolvedModel          → ResolvedModel (kiro.js resolveModel)
+//   QuotaResult            → QuotaResult (kiro.js quota/usage)
+//   TokenResult            → TokenResult (kiro.js token refresh)
+//   Event                  → Event (AWS EventStream frame)
+//   StopDisposition        → stopDisposition enum (kiro.js)
+//   IntegrityDiagnostics   → Diagnostics (kiro.js)
+//   IntegrityResult        → IntegrityResult (kiro.js)
+//   UsageSummary           → UsageSummary (kiro.js)
+//   KiroModel              → RegistryModel (OmniRoute)
+//
+// AIClient2API ref: claude-kiro.js — AgenticSystemPrompt, Role* constants,
+//   Tool, ToolCall, Message types (OpenAI → Kiro conversion)
+
 const (
 	agenticSuffix       = "-agentic"
 	thinkingSuffix      = "-thinking"
@@ -12,7 +33,7 @@ const (
 	ThinkingBudgetMax     = 24576
 	DefaultContextLength  = 200000
 
-	DefaultProfileArnBuilderID = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
+	DefaultProfileArnBuilderID = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCXXXXX"
 	DefaultProfileArnSocial    = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
 
 	AutoModel = "auto"
@@ -86,6 +107,7 @@ var (
 )
 
 // Provider-specific data persisted per connection.
+// VansRouter ref: kiro.js — CredentialsProviderData
 type ProviderSpecificData struct {
 	AuthMethod       string
 	ClientID         string
@@ -96,9 +118,12 @@ type ProviderSpecificData struct {
 	IssuerURL        string
 	Scopes           string
 	ClientSecretExp  string
+	KiroToolCallRepair    bool   // VansRouter: disable tool call repair per-account
+	KiroToolCallRepairSet bool   // true when field was explicitly set (not zero-value)
 }
 
 // Credentials holds auth state for a single Kiro account.
+// VansRouter ref: kiro.js — Credentials
 type Credentials struct {
 	AccessToken  string
 	RefreshToken string
@@ -107,6 +132,7 @@ type Credentials struct {
 }
 
 // ChatRequest is an incoming OpenAI-format chat completion request.
+// VansRouter ref: kiro.js — execute() input
 type ChatRequest struct {
 	Model           string              `json:"model"`
 	Messages        []Message           `json:"messages"`
@@ -128,8 +154,8 @@ type OutputConfig struct {
 }
 
 type ThinkingBlock struct {
-	Type        string `json:"type,omitempty"`
-	BudgetTokens int   `json:"budget_tokens,omitempty"`
+	Type         string `json:"type,omitempty"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // Message is a single chat message in OpenAI format.
@@ -152,9 +178,9 @@ type ToolFunction struct {
 }
 
 type ToolCall struct {
-	ID       string             `json:"id"`
-	Type     string             `json:"type"`
-	Function ToolCallFunction   `json:"function"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
 }
 
 type ToolCallFunction struct {
@@ -246,6 +272,7 @@ const (
 
 const (
 	KIRO_TOOL_CALL_REPAIR_BUFFER_MAX_BYTES = 8 * 1024 * 1024
+	KIRO_REPAIR_HEARTBEAT_MS               = 10_000
 	EventstreamMaxMessageBytes             = 24 * 1024 * 1024
 	EventstreamMaxHeadersBytes             = 128 * 1024
 )
@@ -271,10 +298,4 @@ type KiroModel struct {
 	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
 }
 
-// awsEventStreamFrame is kept for backward compat with parser.go internals.
-type awsEventStreamFrame struct {
-	totalLength   uint32
-	headersLength uint32
-	headers       []byte
-	payload       []byte
-}
+

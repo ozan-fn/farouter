@@ -1,5 +1,11 @@
 package kiro
 
+// VansRouter equivalents:
+//   RefreshToken    → open-sse/executors/kiro.js refreshCredentials()
+//   refreshAWSSSO   → open-sse/services/tokenRefresh.js refreshKiroToken() AWS SSO path
+//   refreshSocial   → open-sse/services/tokenRefresh.js refreshKiroToken() social path
+//   socialAuthService → open-sse/config/appConstants.js OAUTH_ENDPOINTS
+
 import (
 	"bytes"
 	"context"
@@ -10,6 +16,7 @@ import (
 
 const socialAuthService = "https://prod.us-east-1.auth.desktop.kiro.dev"
 
+// RefreshToken — VansRouter: kiro.js refreshCredentials() → tokenRefresh.js
 func RefreshToken(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
 	if isExternalIdpAuthMethod(psd.AuthMethod) && psd.TokenEndpoint != "" {
 		return refreshExternalIdpToken(ctx, refreshToken, psd)
@@ -20,6 +27,7 @@ func RefreshToken(ctx context.Context, refreshToken string, psd ProviderSpecific
 	return refreshSocial(ctx, refreshToken)
 }
 
+// VansRouter: AWS SSO OIDC token refresh
 func refreshAWSSSO(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
 	region := psd.Region
 	if region == "" {
@@ -35,6 +43,7 @@ func refreshAWSSSO(ctx context.Context, refreshToken string, psd ProviderSpecifi
 	return doRefreshPost(ctx, endpoint, payload)
 }
 
+// VansRouter: social auth token refresh
 func refreshSocial(ctx context.Context, refreshToken string) (*TokenResult, error) {
 	payload, _ := json.Marshal(map[string]string{
 		"refreshToken": refreshToken,
@@ -42,6 +51,7 @@ func refreshSocial(ctx context.Context, refreshToken string) (*TokenResult, erro
 	return doRefreshPost(ctx, socialAuthService+"/refreshToken", payload)
 }
 
+// doRefreshPost — Go-specific HTTP POST helper
 func doRefreshPost(ctx context.Context, url string, payload []byte) (*TokenResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
