@@ -130,6 +130,7 @@ type Credentials struct {
 	AccessToken  string
 	RefreshToken string
 	ProfileArn   string
+	MachineId    string
 	PSD          ProviderSpecificData
 }
 

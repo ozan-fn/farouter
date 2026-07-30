@@ -50,6 +50,7 @@ func (a *accountState) getCreds(ctx context.Context) (kiro.Credentials, error) {
 			AccessToken:  a.accessToken,
 			RefreshToken: a.cfg.RefreshToken,
 			ProfileArn:   a.cfg.ProfileArn,
+			MachineId:    a.cfg.MachineId,
 			PSD:          psd,
 		}
 		a.mu.Unlock()
@@ -108,6 +109,7 @@ func (a *accountState) getCreds(ctx context.Context) (kiro.Credentials, error) {
 		AccessToken:  a.accessToken,
 		RefreshToken: a.cfg.RefreshToken,
 		ProfileArn:   a.cfg.ProfileArn,
+		MachineId:    a.cfg.MachineId,
 		PSD:          psd,
 	}, nil
 }

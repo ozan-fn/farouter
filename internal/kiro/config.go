@@ -13,23 +13,40 @@ import "strings"
 
 // GetKiroServiceHeaders — VansRouter: appConstants.js + kiro.js buildHeaders()
 const (
-	KIRO_STREAMING_TARGET           = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
-	KIRO_VERSION                    = "0.11.107"
-	KIRO_SDK_USER_AGENT             = "AWS-SDK-JS/3.0.0 KiroIDE-" + KIRO_VERSION
-	KIRO_AMZ_USER_AGENT             = "aws-sdk-js/3.0.0 KiroIDE-" + KIRO_VERSION
-	KIRO_EXTERNAL_IDP_AUTH_METHOD   = "external_idp"
+	KIRO_STREAMING_TARGET               = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+	KIRO_VERSION                        = "0.11.107"
+	KIRO_SDK_VERSION                    = "1.0.34"
+	KIRO_EXTERNAL_IDP_AUTH_METHOD       = "external_idp"
 	KIRO_EXTERNAL_IDP_TOKEN_TYPE_HEADER = "TokenType"
 	KIRO_EXTERNAL_IDP_TOKEN_TYPE_VALUE  = "EXTERNAL_IDP"
 )
 
+// buildUserAgent builds the full User-Agent string for a given machineId.
+// Format matches Kiro-Go kiro_headers.go buildKiroHeaderValues().
+func buildUserAgent(machineId string) string {
+	ua := "aws-sdk-js/" + KIRO_SDK_VERSION + " ua/2.1 os/linux lang/js md/nodejs#22.22.0 api/codewhispererstreaming#" + KIRO_SDK_VERSION + " m/E KiroIDE-" + KIRO_VERSION
+	if machineId != "" {
+		ua += "-" + machineId
+	}
+	return ua
+}
+
+// buildAmzUserAgent builds the x-amz-user-agent string for a given machineId.
+func buildAmzUserAgent(machineId string) string {
+	ua := "aws-sdk-js/" + KIRO_SDK_VERSION + " KiroIDE-" + KIRO_VERSION
+	if machineId != "" {
+		ua += "-" + machineId
+	}
+	return ua
+}
+
 // GetKiroServiceHeaders — VansRouter: kiro.js buildHeaders() headers base
+// User-Agent is not included here; it is set per-request in BuildKiroHeaders.
 func GetKiroServiceHeaders() map[string]string {
 	return map[string]string{
 		"Content-Type":                "application/json",
 		"Accept":                      "application/vnd.amazon.eventstream",
 		"X-Amz-Target":                KIRO_STREAMING_TARGET,
-		"User-Agent":                  KIRO_SDK_USER_AGENT,
-		"X-Amz-User-Agent":            KIRO_AMZ_USER_AGENT,
 		"x-amzn-codewhisperer-optout": "true",
 		"x-amzn-kiro-agent-mode":      "vibe",
 	}

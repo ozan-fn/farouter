@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"farouter/internal/kiro"
+
+	"github.com/google/uuid"
 )
 
 // bootReady signals when config loading is complete and accounts are initialized.
@@ -125,9 +127,15 @@ func loadConfig() {
 		}
 	}
 	sessionsMu.Unlock()
+	needsSave := false
 	for _, a := range cfg.Accounts {
 		if a.RefreshToken == "" {
 			continue
+		}
+		if a.MachineId == "" {
+			a.MachineId = uuid.New().String()
+			needsSave = true
+			log.Printf("generated machineId for account %s", a.Label)
 		}
 		state := &accountState{cfg: a, remaining: tokenLimit}
 		if a.Exhausted {
@@ -149,6 +157,10 @@ func loadConfig() {
 		accounts = append(accounts, state)
 	}
 	log.Printf("loaded %d kiro accounts", len(accounts))
+
+	if needsSave {
+		log.Printf("saving config with newly generated machineIds")
+	}
 
 	if len(cfg.ActiveBatchIds) > 0 {
 		rotationMu.Lock()

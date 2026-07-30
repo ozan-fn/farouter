@@ -69,6 +69,8 @@ func BuildKiroHeaders(creds Credentials) map[string]string {
 	headers := GetKiroServiceHeaders()
 	headers["Amz-Sdk-Request"] = "attempt=1; max=3"
 	headers["Amz-Sdk-Invocation-Id"] = uuid.New().String()
+	headers["User-Agent"] = buildUserAgent(creds.MachineId)
+	headers["X-Amz-User-Agent"] = buildAmzUserAgent(creds.MachineId)
 
 	token := creds.AccessToken
 	if creds.PSD.AuthMethod == "api_key" {
@@ -93,8 +95,8 @@ func BuildKiroHeaders(creds Credentials) map[string]string {
 // BuildStreamingHeaders — VansRouter legacy pattern (kiro.js inline)
 func BuildStreamingHeaders(creds Credentials, host string) map[string]string {
 	headers := map[string]string{
-		"User-Agent":       "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#22.22.0 api/codewhispererstreaming#3.0.0 m/E KiroIDE-" + KIRO_VERSION,
-		"x-amz-user-agent": "aws-sdk-js/3.0.0 KiroIDE-" + KIRO_VERSION,
+		"User-Agent":       buildUserAgent(creds.MachineId),
+		"x-amz-user-agent": buildAmzUserAgent(creds.MachineId),
 	}
 	if host != "" {
 		headers["Host"] = host

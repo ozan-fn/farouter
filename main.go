@@ -37,6 +37,7 @@ type AccountConfig struct {
 	RefreshToken       string  `json:"refreshToken"`
 	ProfileArn         string  `json:"profileArn"`
 	AuthMethod         string  `json:"authMethod"`
+	MachineId          string  `json:"machineId,omitempty"`
 	KiroToolCallRepair *bool   `json:"kiroToolCallRepair,omitempty"`
 	Exhausted          bool    `json:"exhausted,omitempty"`
 	Suspended          bool    `json:"suspended,omitempty"`
