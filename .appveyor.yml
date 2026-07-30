@@ -9,11 +9,10 @@ branches:
 # Menonaktifkan pembacaan file solusi Visual Studio otomatis
 build: off
 
-# Caching folder modul Go & kompilasi build (Path pengguna 'appveyor')
+# Caching folder modul Go & kompilasi build menggunakan Absolute Path resmi AppVeyor
 cache:
-  - ~/.cache/go-build            # Cache hasil kompilasi Go
-  - ~/go/pkg/mod                 # Cache modul/dependensi Go
-  - /var/cache/apt/archives      # Cache paket apt (opsional, menjaga agar apt install cepat)
+  - /home/appveyor/.cache/go-build
+  - /home/appveyor/go/pkg/mod
 
 # Langkah setup environment, instalasi tools dasar, kompilasi, dan kompresi
 build_script:
