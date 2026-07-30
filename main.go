@@ -100,6 +100,7 @@ func main() {
 
 	r.Post("/api/login", handleLogin)
 	r.Get("/api/verify", handleVerify)
+	r.Get("/v1/models", handleModels)
 
 	opencode.InitPool()
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {

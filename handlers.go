@@ -473,3 +473,34 @@ func mustMarshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+func handleModels(w http.ResponseWriter, r *http.Request) {
+	type modelObj struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+	models := []string{
+		"kr/auto",
+		"kr/auto-thinking",
+		"kr/claude-haiku-4.5",
+		"kr/claude-haiku-4.5-thinking",
+		"kr/claude-sonnet-4.5",
+		"kr/claude-sonnet-4.5-thinking",
+	}
+	data := make([]modelObj, 0, len(models))
+	for _, id := range models {
+		data = append(data, modelObj{
+			ID:      id,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: "kiro",
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"object": "list",
+		"data":   data,
+	})
+}
