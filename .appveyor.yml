@@ -9,16 +9,16 @@ branches:
 # Menonaktifkan pembacaan file solusi Visual Studio otomatis
 build: off
 
-# Caching folder modul Go, kompilasi build, serta binary UPX
+# Caching folder modul Go & kompilasi build (Path pengguna 'appveyor')
 cache:
-  - /root/go/pkg/mod             # Cache untuk Go modules/dependencies
-  - /root/.cache/go-build        # Cache untuk hasil kompilasi Go
-  - /usr/bin/upx                 # Cache biner UPX agar tidak perlu download ulang
+  - ~/.cache/go-build            # Cache hasil kompilasi Go
+  - ~/go/pkg/mod                 # Cache modul/dependensi Go
+  - /var/cache/apt/archives      # Cache paket apt (opsional, menjaga agar apt install cepat)
 
 # Langkah setup environment, instalasi tools dasar, kompilasi, dan kompresi
 build_script:
   - go version
-  # Install UPX dan LFTP sekaligus dalam 1 kali apt update (jika belum ada di cache)
+  # Install UPX dan LFTP sekaligus dalam 1 kali apt update (jika belum ada di sistem)
   - if [ ! -f /usr/bin/upx ] || [ ! -f /usr/bin/lftp ]; then sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends upx lftp; fi
   # Build biner Go
   - CGO_ENABLED=0 go build -ldflags="-w -s" -o farouter .

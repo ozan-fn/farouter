@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -81,6 +82,7 @@ var (
 	cavemanLevel  string
 	ponytailLevel string
 	tokenSaverMu  sync.RWMutex
+	startTime     = time.Now()
 )
 
 func main() {
@@ -154,6 +156,22 @@ func main() {
 		r.Get("/api/analytics/metrics", handleMetrics)
 		r.Get("/api/analytics/logs", handleLogs)
 		r.Delete("/api/analytics/logs", handleClearLogs)
+		r.Get("/api/uptime", func(w http.ResponseWriter, r *http.Request) {
+			d := time.Since(startTime)
+			days := int(d.Hours()) / 24
+			hours := int(d.Hours()) % 24
+			mins := int(d.Minutes()) % 60
+			var s string
+			if days > 0 {
+				s = fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+			} else if hours > 0 {
+				s = fmt.Sprintf("%dh %dm", hours, mins)
+			} else {
+				s = fmt.Sprintf("%dm", mins)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"uptime": s, "uptimeSeconds": int(d.Seconds())})
+		})
 	})
 
 	serveSPA(r, distFS, "web/dist")

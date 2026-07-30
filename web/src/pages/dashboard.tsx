@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Coins, Users, ArrowUpRight, ArrowDownRight, Activity, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
+import { Coins, Users, ArrowUpRight, ArrowDownRight, Activity, CheckCircle, AlertCircle, XCircle, Clock } from 'lucide-react';
 
 interface AccountStatus {
   id: string;
@@ -25,16 +25,19 @@ const Dashboard = () => {
   const [rtkEnabled, setRtkEnabled] = useState(true);
   const [rtkToggling, setRtkToggling] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [uptime, setUptime] = useState<string>('');
 
   const fetchData = useCallback(() => {
     Promise.all([
       fetch('/status').then((r) => r.json()),
       fetch('/api/rtk').then((r) => r.json()),
       fetch('/api/analytics/metrics').then((r) => r.json()),
+      fetch('/api/uptime').then((r) => r.json()),
     ])
-      .then(([accts, rtk, metrics]) => {
+      .then(([accts, rtk, metrics, up]) => {
         setAccounts(accts as AccountStatus[]);
         setRtkEnabled((rtk as { rtkEnabled: boolean }).rtkEnabled);
+        setUptime((up as { uptime: string }).uptime || '');
         
         if (metrics && metrics.length > 0) {
           const latest = metrics[metrics.length - 1];
@@ -100,7 +103,7 @@ const Dashboard = () => {
         <p className="text-gray-400">Loading...</p>
       ) : (
         <>
-          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
             <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm text-gray-400">Quota Available</div>
@@ -150,6 +153,17 @@ const Dashboard = () => {
               <div className="mt-1 text-xs text-gray-500">
                 {stats ? `${stats.tokensUsed.toLocaleString()} in / ${stats.tokensGenerated.toLocaleString()} out` : 'N/A'}
               </div>
+            </div>
+
+            <div className="border border-gray-700 bg-gray-800/40 p-6 transition hover:border-gray-600 hover:bg-gray-800/60">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-gray-400">Uptime</div>
+                <Clock className="text-orange-400" size={20} />
+              </div>
+              <div className="text-3xl font-bold text-orange-400">
+                {uptime || '—'}
+              </div>
+              <div className="mt-1 text-xs text-gray-500">Since last restart</div>
             </div>
           </div>
 
