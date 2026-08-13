@@ -111,6 +111,11 @@ func PipeWithDisconnect(r io.Reader, sc *StreamController, ttftTimeout, stallTim
 
 	go func() {
 		defer pw.Close()
+		// Close the upstream reader on termination so the producer behind it
+		// unblocks via io.ErrClosedPipe instead of leaking on client disconnect.
+		if c, ok := r.(io.Closer); ok {
+			defer c.Close()
+		}
 
 		type readResult struct {
 			n   int

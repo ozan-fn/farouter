@@ -148,6 +148,11 @@ func createPassthroughTransform(r io.Reader, sc *StreamController, model string)
 
 	go func() {
 		defer pw.Close()
+		// Close the upstream reader on termination so the producer behind it
+		// unblocks via io.ErrClosedPipe instead of leaking on client disconnect.
+		if c, ok := r.(io.Closer); ok {
+			defer c.Close()
+		}
 		scanner := bufio.NewScanner(r)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 

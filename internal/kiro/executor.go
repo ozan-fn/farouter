@@ -286,28 +286,42 @@ func pipeKiroResponse(ctx context.Context, resp *http.Response, w http.ResponseW
 		w.Header().Set(k, v)
 	}
 
-	// Streaming copy
+	// Streaming copy: closes finalReader on every return path so the upstream
+	// producer goroutines unblock via io.ErrClosedPipe instead of leaking.
+	pipeStreamToClient(ctx, sc, w, finalReader)
+	return nil
+}
+
+// pipeStreamToClient copies an SSE pipe to the client, closing the pipe reader
+// on all exit paths. Closing it wakes any blocked upstream writer with
+// io.ErrClosedPipe, so a client disconnect (or context cancel) collapses the
+// whole producer chain instead of leaking goroutines.
+func pipeStreamToClient(ctx context.Context, sc *StreamController, w http.ResponseWriter, finalReader io.Reader) {
+	if c, ok := finalReader.(io.Closer); ok {
+		defer c.Close()
+	}
 	buf := make([]byte, 32768)
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		default:
 		}
 		n, rerr := finalReader.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return nil
+				sc.HandleDisconnect("client write failed: " + werr.Error())
+				return
 			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
 		}
 		if rerr == io.EOF {
-			return nil
+			return
 		}
 		if rerr != nil {
-			return nil
+			return
 		}
 	}
 }
@@ -465,29 +479,7 @@ func streamSSEBytes(ctx context.Context, w http.ResponseWriter, data []byte, mod
 	for k, v := range SSEHeadersCORS {
 		w.Header().Set(k, v)
 	}
-	buf := make([]byte, 32768)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		n, rerr := finalReader.Read(buf)
-		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
-			}
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-		if rerr == io.EOF {
-			return
-		}
-		if rerr != nil {
-			return
-		}
-	}
+	pipeStreamToClient(ctx, sc, w, finalReader)
 }
 
 // VansRouter ref: kiro.js writeIntegritySSE

@@ -303,3 +303,46 @@ func TestCleanUsagePayload(t *testing.T) {
 		t.Error("nil usage should be removed")
 	}
 }
+
+// TestProducerChainCollapsesOnDisconnect ensures that when the client
+// disconnects (HandleDisconnect + the read end of finalReader is closed), the
+// whole producer chain unblocks via io.ErrClosedPipe instead of leaking
+// goroutines blocked on a full pipe.
+func TestProducerChainCollapsesOnDisconnect(t *testing.T) {
+	upPR, upPW := io.Pipe()
+	sc := NewStreamController(context.Background())
+
+	// Upstream producer that writes forever; it blocks once the chain below it
+	// stops reading. It must be unblocked and exit after disconnect.
+	producerDone := make(chan struct{})
+	go func() {
+		defer upPW.Close()
+		chunk := make([]byte, 64*1024)
+		for {
+			if _, err := upPW.Write(chunk); err != nil {
+				producerDone <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	pipeOut := PipeWithDisconnect(upPR, sc, 0, 30*time.Second, "test")
+	finalReader := createPassthroughTransform(pipeOut, sc, "test")
+
+	// Consume a little to start the pipeline.
+	buf := make([]byte, 4096)
+	finalReader.Read(buf)
+
+	// Simulate the client disconnect path: mark disconnected and stop reading
+	// by closing the read end, exactly as pipeStreamToClient does.
+	sc.HandleDisconnect("client disconnected")
+	if c, ok := finalReader.(io.Closer); ok {
+		c.Close()
+	}
+
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream producer leaked: still blocked writing to pipe after disconnect")
+	}
+}
