@@ -250,6 +250,10 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	go func() {
+		<-r.Context().Done()
+		cancel()
+	}()
 
 	heartbeatStop := make(chan struct{})
 	defer close(heartbeatStop)

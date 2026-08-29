@@ -110,13 +110,8 @@ func pingProxy(addr string, ch chan<- pingedProxy) {
 
 func pingSortedProxies(addrs []string) []pingedProxy {
 	ch := make(chan pingedProxy, len(addrs))
-	sem := make(chan struct{}, 10)
 	for _, addr := range addrs {
-		sem <- struct{}{}
-		go func(a string) {
-			defer func() { <-sem }()
-			pingProxy(a, ch)
-		}(addr)
+		go pingProxy(addr, ch)
 	}
 
 	timeout := time.After(pingTimeout)

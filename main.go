@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -87,7 +86,6 @@ var (
 )
 
 func main() {
-	debug.SetMaxThreads(15)
 	analyticsData = analytics.New()
 	loadConfig()
 	kiro.GlobalTokenCallback = func(inputTokens, outputTokens int64) {
