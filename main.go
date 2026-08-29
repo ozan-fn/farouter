@@ -87,7 +87,7 @@ var (
 )
 
 func main() {
-	debug.SetMaxThreads(15)
+	debug.SetMaxThreads(40)
 	analyticsData = analytics.New()
 	loadConfig()
 	kiro.GlobalTokenCallback = func(inputTokens, outputTokens int64) {
