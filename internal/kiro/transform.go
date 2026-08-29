@@ -700,7 +700,7 @@ func flattenToolInteractions(messages []Message) []Message {
 			}
 			combined := strings.Join(parts, "\n")
 			if combined == "" {
-				combined = "..."
+				continue
 			}
 			out = append(out, Message{Role: RoleAssistant, Content: combined})
 
