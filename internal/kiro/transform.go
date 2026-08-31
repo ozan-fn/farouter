@@ -32,6 +32,8 @@ import (
 //   - single-turn vs multi-turn system injection → VansRouter injects via direct prepend
 //   - system msg <instructions> wrapping  → ADDED (VansRouter pattern)
 
+const kiroOrigin = "AI_EDITOR"
+
 type KiroRequestResult struct {
 	Body    []byte
 	NameMap map[string]string
@@ -97,7 +99,7 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 			existing, _ := uim["content"].(string)
 			uim["content"] = systemPrompt + "\n\n" + existing
 			uim["modelId"] = upstreamModel
-			uim["origin"] = "AI_EDITOR"
+			uim["origin"] = kiroOrigin
 		}
 	}
 
@@ -134,7 +136,7 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 			uim := map[string]any{
 				"content": "Continue",
 				"modelId": upstreamModel,
-				"origin":  "AI_EDITOR",
+				"origin":  kiroOrigin,
 			}
 			// If the assistant had toolUses, create synthetic toolResults
 			if tuArr, has := arm["toolUses"].([]any); has && len(tuArr) > 0 {
@@ -229,6 +231,13 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 
 	if profileArn != "" {
 		payload["profileArn"] = profileArn
+	}
+
+	payload["agentMode"] = "vibe"
+
+	effort := resolveKiroEffort(req)
+	if amrf := BuildAdditionalModelRequestFields(effort, upstreamModel); amrf != nil {
+		payload["additionalModelRequestFields"] = amrf
 	}
 
 	body, err := json.Marshal(payload)
@@ -389,7 +398,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 			uim := map[string]any{
 				"content": content,
 				"modelId": upstreamModel,
-				"origin":  "AI_EDITOR",
+				"origin":  kiroOrigin,
 			}
 			if hasImages {
 				uim["images"] = pendingImages
@@ -505,7 +514,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 			"userInputMessage": map[string]any{
 				"content": "",
 				"modelId": upstreamModel,
-				"origin":  "AI_EDITOR",
+				"origin":  kiroOrigin,
 			},
 		}
 	}
@@ -588,7 +597,7 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 					uim := map[string]any{
 						"content": "Continue",
 						"modelId": upstreamModel,
-						"origin":  "AI_EDITOR",
+						"origin":  kiroOrigin,
 					}
 					if len(syntheticResults) > 0 {
 						uim["userInputMessageContext"] = map[string]any{

@@ -5,7 +5,6 @@ package kiro
 //   KnownModels            → open-sse/config/providerModels.js + capabilities.js
 //   GetOrderedBaseURLs     → open-sse/executors/kiro.js getOrderedBaseUrls()
 //   ResolveRuntimeRegion   → open-sse/config/kiroRegion.ts
-//   NormalizeEffort        → open-sse/config/kiroConstants.js extractKiroEffortLevel()
 //   ThinkingLengthForEffort → open-sse/config/kiroConstants.js effortToBudget()
 //   RegionFromProfileArn   → open-sse/config/kiroRegion.ts
 
@@ -84,19 +83,6 @@ func IsKnownModel(id string) bool {
 		}
 	}
 	return false
-}
-
-// NormalizeEffort — VansRouter: kiroConstants.js extractKiroEffortLevel()
-func NormalizeEffort(raw string) string {
-	switch strings.ToLower(raw) {
-	case "none", "off", "disabled", "":
-		return ""
-	case "max":
-		return "xhigh"
-	case "low", "medium", "high", "xhigh":
-		return strings.ToLower(raw)
-	}
-	return ""
 }
 
 // ThinkingLengthForEffort — VansRouter: kiroConstants.js effortToBudget()
