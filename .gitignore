@@ -7,3 +7,5 @@ config.json
 # Go build cache
 *.test
 *.out
+p.json
+9router

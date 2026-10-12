@@ -167,6 +167,10 @@ type Message struct {
 	Content    any        `json:"content"`
 	ToolCallID string     `json:"tool_call_id"`
 	ToolCalls  []ToolCall `json:"tool_calls"`
+	// IsError / Status mirror 9router openai-to-kiro.js convertMessages: a tool
+	// result flagged as an error is reported upstream with status "error".
+	IsError bool   `json:"is_error,omitempty"`
+	Status  string `json:"status,omitempty"`
 }
 
 type Tool struct {

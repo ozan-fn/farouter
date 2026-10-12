@@ -247,6 +247,29 @@ func buildKiroRequest(req ChatRequest, resolved ResolvedModel, profileArn, conve
 	return &KiroRequestResult{Body: body, NameMap: nameMap}, nil
 }
 
+// mergeUserInputContext folds src's userInputMessageContext entries into dst so
+// a merge does not silently drop toolResults/tools from the second user turn.
+// 9router ref: openai-to-kiro.js consecutive-user merge.
+func mergeUserInputContext(dst, src map[string]any) {
+	srcCtx, ok := src["userInputMessageContext"].(map[string]any)
+	if !ok {
+		return
+	}
+	dstCtx, _ := dst["userInputMessageContext"].(map[string]any)
+	if dstCtx == nil {
+		dst["userInputMessageContext"] = srcCtx
+		return
+	}
+	for _, key := range []string{"toolResults", "tools"} {
+		arr, ok := srcCtx[key].([]any)
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		existing, _ := dstCtx[key].([]any)
+		dstCtx[key] = append(existing, arr...)
+	}
+}
+
 func ensureConversationID(cid string, messages []Message) string {
 	if cid != "" {
 		return cid
@@ -419,9 +442,13 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 			pendingImages = nil
 
 		} else if currentRole == RoleAssistant {
-			content := strings.Join(pendingAssistantContent, "\n\n")
-			if strings.TrimSpace(content) == "" {
-				// Skip empty assistant (AIClient2API tidak pakai "(empty)")
+			// Drop the empty assistant turn instead of injecting a "..."
+			// placeholder: an ellipsis-only turn is classified as a hallucination by
+			// validateIntegrity (IntegrityEllipsis) and the model can echo the
+			// placeholder back to the client. Alternation is kept by folding the
+			// surrounding user turns together below.
+			content := strings.TrimSpace(strings.Join(pendingAssistantContent, "\n\n"))
+			if content == "" {
 				pendingAssistantContent = nil
 				return
 			}
@@ -460,9 +487,14 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 		if role == RoleUser {
 			if msg.Role == RoleTool {
 				toolContent := serializeToolResultContent(msg.Content)
+				// 9router ref: is_error / status=="error" → status "error".
+				toolStatus := "success"
+				if msg.IsError || msg.Status == "error" {
+					toolStatus = "error"
+				}
 				pendingToolResults = append(pendingToolResults, map[string]any{
 					"toolUseId": msg.ToolCallID,
-					"status":    "success",
+					"status":    toolStatus,
 					"content":   []any{map[string]any{"text": toolContent}},
 				})
 			} else {
@@ -518,6 +550,29 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 			},
 		}
 	}
+
+	// 9router ref: openai-to-kiro.js merges consecutive user messages because Kiro
+	// requires alternating user/assistant turns. Merge before the stale-message
+	// repair so a dropped/empty turn can never leave two users in a row.
+	mergedHistory := make([]map[string]any, 0, len(history))
+	for _, item := range history {
+		uim, isUser := item["userInputMessage"].(map[string]any)
+		if !isUser {
+			mergedHistory = append(mergedHistory, item)
+			continue
+		}
+		if len(mergedHistory) > 0 {
+			if prev, ok := mergedHistory[len(mergedHistory)-1]["userInputMessage"].(map[string]any); ok {
+				prevContent, _ := prev["content"].(string)
+				curContent, _ := uim["content"].(string)
+				prev["content"] = prevContent + "\n\n" + curContent
+				mergeUserInputContext(prev, uim)
+				continue
+			}
+		}
+		mergedHistory = append(mergedHistory, item)
+	}
+	history = mergedHistory
 
 	// ── Fix stale currentMessage when history ends with assistant(toolUses) ──
 	// If the last history entry is assistantResponseMessage with toolUses, and
@@ -633,13 +688,11 @@ func convertMessages(messages []Message, tools []Tool, upstreamModel string, mod
 	}
 
 	return convertResult{
-		history:       history,
+		history:        history,
 		currentMessage: currentMessage,
-		systemContent: systemContent,
+		systemContent:  systemContent,
 	}
 }
-
-
 
 // VansRouter ref: openai-to-kiro.js flattenToolInteractions collapses tool calls/results to plain text when
 // the client did NOT send tools. This keeps the request honest and sidesteps
@@ -681,8 +734,13 @@ func flattenToolInteractions(messages []Message) []Message {
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleTool:
-			text := toolResultToText(msg.Content)
-			out = append(out, Message{Role: RoleUser, Content: text})
+			// 9router ref: toolResultText() wraps the result so the flattened turn
+			// stays readable: "[Tool result: X]" (or "[Tool result (error): X]").
+			label := "[Tool result: "
+			if msg.IsError || msg.Status == "error" {
+				label = "[Tool result (error): "
+			}
+			out = append(out, Message{Role: RoleUser, Content: label + toolResultToText(msg.Content) + "]"})
 
 		case RoleAssistant:
 			var parts []string
@@ -709,6 +767,8 @@ func flattenToolInteractions(messages []Message) []Message {
 			}
 			combined := strings.Join(parts, "\n")
 			if combined == "" {
+				// Drop the empty assistant turn (no "..." placeholder — see the
+				// convertMessages note); the user turns around it get merged.
 				continue
 			}
 			out = append(out, Message{Role: RoleAssistant, Content: combined})
@@ -769,8 +829,13 @@ func reconcileOrphanedToolResults(history []map[string]any, currentMessage map[s
 				if id, ok := trMap["toolUseId"].(string); ok && validIDs[id] {
 					kept = append(kept, tr)
 				} else {
-					text := serializeToolResultContent(trMap["content"])
-					salvaged = append(salvaged, text)
+					// 9router ref: salvaged orphan results keep the "[Tool result: ...]"
+					// text wrapper so the content survives as readable history.
+					label := "[Tool result: "
+					if status, _ := trMap["status"].(string); status == "error" {
+						label = "[Tool result (error): "
+					}
+					salvaged = append(salvaged, label+serializeToolResultContent(trMap["content"])+"]")
 				}
 			}
 		}
@@ -812,12 +877,14 @@ func serializeToolResultContent(content any) string {
 			if !ok {
 				continue
 			}
+			// 9router ref: toolResultText() reads part.text whether or not the part
+			// carries a `type` tag (Kiro toolResults store bare {text: "..."} parts).
+			if txt, ok := m["text"].(string); ok && txt != "" {
+				parts = append(parts, txt)
+				continue
+			}
 			t, _ := m["type"].(string)
-			if t == "text" {
-				if txt, ok := m["text"].(string); ok && txt != "" {
-					parts = append(parts, txt)
-				}
-			} else if t == "image" || t == "image_url" {
+			if t == "image" || t == "image_url" {
 				parts = append(parts, "[image]")
 			} else {
 				b, err := json.Marshal(m)
@@ -1015,4 +1082,3 @@ func parseDataURI(uri string) map[string]any {
 		"source": map[string]any{"bytes": data},
 	}
 }
-
