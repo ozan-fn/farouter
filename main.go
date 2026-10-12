@@ -154,6 +154,7 @@ func main() {
 		r.Get("/api/ponytail", handlePonytail)
 		r.Post("/api/ponytail", handlePonytail)
 		r.Post("/accounts/reset", handleReset)
+		r.Post("/off", handleOff)
 		r.Post("/auth/kiro/refresh", handleKiroRefresh)
 		r.Get("/api/analytics/metrics", handleMetrics)
 		r.Get("/api/analytics/logs", handleLogs)

@@ -413,6 +413,18 @@ func handleReset(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"reset": len(accounts)})
 }
 
+func handleOff(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"off": true})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	}()
+}
+
 func writeJSONError(w http.ResponseWriter, msg, errType string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

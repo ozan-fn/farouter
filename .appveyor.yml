@@ -27,4 +27,4 @@ build_script:
 # Langkah eksekusi deployment via LFTP
 deploy_script:
   - |
-    lftp -c "open -u $FTP_USER,$FTP_PASS $FTP_HOST; rm -f /go/farouter; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
+    lftp -c "set ssl:check-hostname no; open -u $FTP_USER,$FTP_PASS $FTP_HOST; rm -f /go/farouter; put farouter -o /go/farouter; chmod 700 /go/farouter; put /dev/null -o /go/up"
