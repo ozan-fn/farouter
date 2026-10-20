@@ -30,17 +30,18 @@ const (
 )
 
 type AccountConfig struct {
-	ID                 string  `json:"id"`
-	Label              string  `json:"label"`
-	RefreshToken       string  `json:"refreshToken"`
-	ProfileArn         string  `json:"profileArn"`
-	AuthMethod         string  `json:"authMethod"`
-	MachineId          string  `json:"machineId,omitempty"`
-	KiroToolCallRepair *bool   `json:"kiroToolCallRepair,omitempty"`
-	Exhausted          bool    `json:"exhausted,omitempty"`
-	Suspended          bool    `json:"suspended,omitempty"`
-	ResetAt            string  `json:"resetAt,omitempty"`
-	LastRefreshedAt    string  `json:"lastRefreshedAt,omitempty"`
+	ID                 string `json:"id"`
+	Label              string `json:"label"`
+	RefreshToken       string `json:"refreshToken"`
+	ProfileArn         string `json:"profileArn"`
+	AuthMethod         string `json:"authMethod"`
+	MachineId          string `json:"machineId,omitempty"`
+	KiroToolCallRepair *bool  `json:"kiroToolCallRepair,omitempty"`
+	Exhausted          bool   `json:"exhausted,omitempty"`
+	Suspended          bool   `json:"suspended,omitempty"`
+	Invalid            bool   `json:"invalid,omitempty"`
+	ResetAt            string `json:"resetAt,omitempty"`
+	LastRefreshedAt    string `json:"lastRefreshedAt,omitempty"`
 }
 
 type SessionConfig struct {
@@ -149,6 +150,10 @@ func Run(distFS embed.FS) {
 		r.Post("/api/caveman", handleCaveman)
 		r.Get("/api/ponytail", handlePonytail)
 		r.Post("/api/ponytail", handlePonytail)
+		r.Post("/accounts", handleAccountsAdd)
+		r.Patch("/accounts/{id}", handleAccountsUpdate)
+		r.Post("/accounts/{id}/check", handleAccountsCheck)
+		r.Delete("/accounts/{id}", handleAccountsDelete)
 		r.Post("/accounts/reset", handleReset)
 		r.Post("/off", handleOff)
 		r.Get("/off", handleOff)

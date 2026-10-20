@@ -365,6 +365,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		Remaining  int    `json:"remaining"`
 		Exhausted  bool   `json:"exhausted"`
 		Suspended  bool   `json:"suspended"`
+		Invalid    bool   `json:"invalid"`
 		ResetAt    string `json:"resetAt"`
 		HasToken   bool   `json:"hasToken"`
 		InPool     bool   `json:"inPool"`
@@ -381,7 +382,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	rotationMu.Unlock()
 
 	var out []entry
-	for _, a := range accounts {
+	for _, a := range snapshotAccounts() {
 		a.mu.Lock()
 		out = append(out, entry{
 			ID:         a.cfg.ID,
@@ -389,6 +390,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 			Remaining:  a.remaining,
 			Exhausted:  a.exhausted,
 			Suspended:  a.suspended,
+			Invalid:    a.invalid,
 			ResetAt:    a.cfg.ResetAt,
 			HasToken:   a.accessToken != "",
 			InPool:     batchSet[a],
@@ -402,7 +404,8 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleReset(w http.ResponseWriter, r *http.Request) {
-	for _, a := range accounts {
+	pool := snapshotAccounts()
+	for _, a := range pool {
 		if !a.suspended {
 			a.reset()
 		}
@@ -410,7 +413,7 @@ func handleReset(w http.ResponseWriter, r *http.Request) {
 	fillActiveBatch()
 	go saveConfig()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"reset": len(accounts)})
+	json.NewEncoder(w).Encode(map[string]any{"reset": len(pool)})
 }
 
 func handleOff(w http.ResponseWriter, r *http.Request) {
@@ -442,10 +445,11 @@ type refreshRequest struct {
 
 func handleKiroRefresh(w http.ResponseWriter, r *http.Request) {
 	var body refreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RefreshToken == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.RefreshToken) == "" {
 		http.Error(w, "missing refresh_token", http.StatusBadRequest)
 		return
 	}
+	body.RefreshToken = strings.TrimSpace(body.RefreshToken)
 	w.Header().Set("Content-Type", "application/json")
 	if body.ClientID != "" && body.ClientSecret != "" {
 		region := body.Region

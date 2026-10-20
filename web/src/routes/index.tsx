@@ -4,6 +4,7 @@ import Login, { loader as loginLoader } from '../pages/login';
 import DashboardLayout from '../pages/dashboardLayout';
 import Dashboard from '../pages/dashboard';
 import Quotas from '../pages/quotas';
+import Accounts from '../pages/accounts';
 import Analytics from '../pages/analytics';
 import Monitoring from '../pages/monitoring';
 import Settings from '../pages/settings';
@@ -24,6 +25,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, Component: Dashboard },
       { path: 'quotas', Component: Quotas },
+      { path: 'accounts', Component: Accounts },
       { path: 'analytics', Component: Analytics },
       { path: 'monitoring', Component: Monitoring },
       { path: 'settings', Component: Settings },

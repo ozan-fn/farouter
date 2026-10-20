@@ -17,7 +17,7 @@ func startMetricsCollector() {
 			suspended := 0
 			totalRemaining := 0
 
-			for _, a := range accounts {
+			for _, a := range snapshotAccounts() {
 				a.mu.Lock()
 				if a.suspended {
 					suspended++

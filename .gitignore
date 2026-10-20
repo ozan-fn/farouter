@@ -1,6 +1,6 @@
 # farouter binaries
 farouter
-
+9router
 # config with real tokens — use config.example.json as template
 config.json
 

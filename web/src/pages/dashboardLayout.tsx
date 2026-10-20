@@ -1,8 +1,9 @@
 import { Outlet, Link, useLocation } from 'react-router';
-import { LayoutDashboard, Gauge, BarChart3, Activity, Settings } from 'lucide-react';
+import { LayoutDashboard, Gauge, BarChart3, Activity, Settings, Users } from 'lucide-react';
 
 const navLinks = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'Accounts', path: '/dashboard/accounts', icon: Users },
   { label: 'Quotas', path: '/dashboard/quotas', icon: Gauge },
   { label: 'Analytics', path: '/dashboard/analytics', icon: BarChart3 },
   { label: 'Monitoring', path: '/dashboard/monitoring', icon: Activity },

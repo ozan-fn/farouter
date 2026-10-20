@@ -184,8 +184,14 @@ func onlineSingleAccount(t *testing.T) *accountState {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parse %s: %v", configFile, err)
 	}
+	// FAROUTER_TEST_ACCOUNT=<label> pins the account, so a suspended entry at
+	// the top of the pool does not decide whether the suite can run.
+	want := os.Getenv("FAROUTER_TEST_ACCOUNT")
 	for _, acc := range cfg.Accounts {
 		if acc.RefreshToken == "" || acc.Suspended || acc.Exhausted {
+			continue
+		}
+		if want != "" && acc.Label != want {
 			continue
 		}
 		if acc.MachineId == "" {

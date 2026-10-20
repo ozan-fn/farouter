@@ -10,18 +10,36 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
+// Refresh failures are split by meaning, because only one of them is terminal:
+//
+//	ErrTokenRejected  → 401, the token itself is bad (dead, needs replacement).
+//	ErrRefreshThrottled → 403/429, the upstream refused this burst; the token
+//	  stays usable, so retrying later is right and marking it dead is not.
+var (
+	ErrTokenRejected    = errors.New("refresh token rejected")
+	ErrRefreshThrottled = errors.New("refresh throttled")
+)
+
 const (
-	socialAuthService     = "https://prod.us-east-1.auth.desktop.kiro.dev"
+	socialAuthService      = "https://prod.us-east-1.auth.desktop.kiro.dev"
 	TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000 // 5 min buffer before expiry
 )
 
 // RefreshToken — VansRouter: kiro.js refreshCredentials() → tokenRefresh.js
 func RefreshToken(ctx context.Context, refreshToken string, psd ProviderSpecificData) (*TokenResult, error) {
+	// A pasted token often carries a trailing newline/space; Kiro answers that
+	// with 401 "Bad credentials", which marks a healthy account as exhausted.
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil, fmt.Errorf("empty refresh token")
+	}
 	if isExternalIdpAuthMethod(psd.AuthMethod) && psd.TokenEndpoint != "" {
 		return refreshExternalIdpToken(ctx, refreshToken, psd)
 	}
@@ -98,7 +116,13 @@ func doRefreshPost(ctx context.Context, url string, payload []byte) (*TokenResul
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf("%w: upstream returned %s", ErrTokenRejected, resp.Status)
+	case http.StatusForbidden, http.StatusTooManyRequests:
+		return nil, fmt.Errorf("%w: upstream returned %s", ErrRefreshThrottled, resp.Status)
+	default:
 		return nil, fmt.Errorf("upstream returned %s", resp.Status)
 	}
 	var result TokenResult
